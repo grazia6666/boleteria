@@ -1,0 +1,107 @@
+services:
+  usuarios:
+    build: ./servicios/usuarios
+    container_name: usuarios
+    ports:
+      - "8001:8000"
+    environment:
+      - SERVICE_NAME=usuarios
+      - BASE_DELAY_MS=5
+      - CPU_LOAD=0
+    cpus: "1.0"
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - boleteria
+
+  eventos:
+    build: ./servicios/eventos
+    container_name: eventos
+    ports:
+      - "8002:8000"
+    environment:
+      - SERVICE_NAME=eventos
+      - BASE_DELAY_MS=5
+      - CPU_LOAD=0
+    cpus: "1.0"
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - boleteria
+
+  reservaciones:
+    build: ./servicios/reservaciones
+    container_name: reservaciones
+    ports:
+      - "8003:8000"
+    environment:
+      - SERVICE_NAME=reservaciones
+      - BASE_DELAY_MS=5
+      - CPU_LOAD=0
+      - USUARIOS_URL=http://usuarios:8000
+      - EVENTOS_URL=http://eventos:8000
+      - PAGO_URL=http://pago:8000
+    cpus: "1.0"
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      - usuarios
+      - eventos
+      - pago
+    networks:
+      - boleteria
+
+  pago:
+    build: ./servicios/pago
+    container_name: pago
+    ports:
+      - "8004:8000"
+    environment:
+      - SERVICE_NAME=pago
+      - BASE_DELAY_MS=5
+      - CPU_LOAD=0
+      - TICKET_URL=http://ticket:8000
+    cpus: "1.0"
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      - ticket
+    networks:
+      - boleteria
+
+  ticket:
+    build: ./servicios/ticket
+    container_name: ticket
+    ports:
+      - "8005:8000"
+    environment:
+      - SERVICE_NAME=ticket
+      - BASE_DELAY_MS=5
+      - CPU_LOAD=0
+      - NOTIFICACIONES_URL=http://notificaciones:8000
+    cpus: "1.0"
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      - notificaciones
+    networks:
+      - boleteria
+
+  notificaciones:
+    build: ./servicios/notificaciones
+    container_name: notificaciones
+    ports:
+      - "8006:8000"
+    environment:
+      - SERVICE_NAME=notificaciones
+      - BASE_DELAY_MS=5
+      - CPU_LOAD=0
+    cpus: "1.0"
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - boleteria
+
+networks:
+  boleteria:
+    driver: bridge
