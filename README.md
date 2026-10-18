@@ -1,426 +1,539 @@
-# Boletería en la Nube: documentación del proyecto
+# Guía del proyecto: variables, campañas y arquitecturas
 
-Proyecto del primer parcial: *Microservice Bottleneck Prediction*. Este documento explica la estructura del proyecto, qué hace cada archivo, qué métricas se recolectan (y cómo se calculan), qué genera cada experimento y qué limitaciones tienen los datos.
+Proyecto P1 — *Microservice Bottleneck Prediction* (Sistemas en la Nube).
+Esta guía explica **qué medimos, por qué, cómo se genera cada dato, qué parámetros tiene cada experimento y cómo funciona cada arquitectura** (los microservicios, el pipeline de datos y el modelo). Está escrita para consultarla cuando te pierdas: cada sección es independiente.
 
 ---
 
-## 1. Estructura del proyecto
+## Índice
+
+1. [La idea completa en un minuto](#1-la-idea-completa-en-un-minuto)
+2. [Arquitectura 1: los 6 microservicios](#2-arquitectura-1-los-6-microservicios)
+3. [Conceptos previos (glosario corto)](#3-conceptos-previos-glosario-corto)
+4. [Variables que recolectamos](#4-variables-que-recolectamos)
+5. [Qué archivos genera cada corrida](#5-qué-archivos-genera-cada-corrida)
+6. [Parámetros de los experimentos y las campañas](#6-parámetros-de-los-experimentos-y-las-campañas)
+7. [Etiquetado: cómo decidimos que hay un cuello de botella](#7-etiquetado-cómo-decidimos-que-hay-un-cuello-de-botella)
+8. [Arquitectura 2: el pipeline de datos y código](#8-arquitectura-2-el-pipeline-de-datos-y-código)
+9. [Arquitectura 3: el baseline y el modelo LSTM](#9-arquitectura-3-el-baseline-y-el-modelo-lstm)
+10. [Métricas de evaluación](#10-métricas-de-evaluación)
+11. [Comandos en orden](#11-comandos-en-orden)
+12. [Limitaciones que debes conocer](#12-limitaciones-que-debes-conocer)
+
+---
+
+## 1. La idea completa en un minuto
+
+1. Tenemos **6 microservicios** (una boletería) que se llaman entre sí.
+2. Les mandamos **tráfico simulado** (Locust) y, a propósito, **les provocamos cuellos de botella** (inyector) en momentos conocidos.
+3. Un **recolector** mide cada servicio cada segundo (CPU, RAM, latencia, peticiones por segundo, cola, errores) y guarda todo en CSV.
+4. Un script de **etiquetado** decide, mirando la latencia, en qué instantes cada servicio estaba en cuello de botella, y marca los **30 segundos anteriores** como "se viene un cuello de botella".
+5. Comparamos dos formas de predecirlo:
+   - **Baseline:** una regla fija ("alarma si CPU > 80 %").
+   - **LSTM:** una red neuronal que mira los últimos 30 s de métricas y estima la probabilidad de que haya un cuello de botella en los próximos 30 s.
+6. Medimos con **Precision, Recall, F1 y Prediction Lead Time** (cuántos segundos antes avisamos).
+
+```
+tráfico (Locust) ──► microservicios ──► recolector ──► CSV ──► etiquetado ──► baseline / LSTM ──► métricas
+                          ▲
+                inyector (provoca cuellos de botella)
+```
+
+---
+
+## 2. Arquitectura 1: los 6 microservicios
+
+Todos son aplicaciones **FastAPI** (Python) en contenedores **Docker**, orquestados con `docker-compose.yml`. Cada contenedor tiene un límite de **1 CPU y 256 MB de RAM**. Ese límite importa: el "100 % de CPU" que medimos es relativo a esa 1 CPU, y por eso un servicio puede saturarse de verdad.
+
+### 2.1 Quién llama a quién
+
+```
+                        ┌──────────► usuarios        (8001)
+ Locust ──► reservaciones (8003) ────► eventos         (8002)
+ (tráfico)              └──────────► pago            (8004) ──► ticket (8005) ──► notificaciones (8006)
+```
+
+- Locust **solo** habla con `reservaciones`: cada reserva (`POST /reservations`) dispara llamadas en cadena.
+- `reservaciones` llama a `usuarios`, `eventos` y `pago`.
+- `pago` llama a `ticket`; `ticket` llama a `notificaciones`.
+- **La cadena más larga tiene 4 servicios:** `reservaciones → pago → ticket → notificaciones`.
+
+### 2.2 Qué hace cada servicio
+
+| Servicio | Puerto (host) | Rol en la boletería | Endpoints principales | Llama a |
+| --- | --- | --- | --- | --- |
+| `usuarios` | 8001 | Registro y consulta de usuarios | `POST/GET /users`, `GET /users/{id}` | nadie |
+| `eventos` | 8002 | Catálogo de eventos y entradas disponibles | `GET/POST /events`, `GET /events/{id}`, `POST /events/{id}/reserve` | nadie |
+| `reservaciones` | 8003 | **Orquestador**: crea la reserva | `POST/GET /reservations`, `GET /reservations/{id}` | usuarios, eventos, pago |
+| `pago` | 8004 | Procesa el pago | `POST/GET /payments` | ticket |
+| `ticket` | 8005 | Genera el ticket | `POST/GET /tickets` | notificaciones |
+| `notificaciones` | 8006 | Envía la notificación final | `POST/GET /notifications` | nadie |
+
+Dentro de la red de Docker cada servicio escucha en el puerto 8000; los puertos 8001–8006 son los que se ven desde tu PC.
+
+### 2.3 El archivo `common.py` (idéntico en los 6)
+
+Es el "motor común" de todos los servicios. Aporta:
+
+| Pieza | Qué hace | Por qué nos sirve |
+| --- | --- | --- |
+| `config` (`base_delay_ms`, `cpu_load`) | Parámetros de comportamiento modificables en vivo | Permiten provocar cuellos de botella |
+| `simulate_work()` | Espera `base_delay_ms` (por defecto 5 ms) y luego hace un bucle de CPU de `cpu_load × 10.000` iteraciones | Con `cpu_load=0` el servicio es rápido; al subirlo consume CPU real y se satura |
+| `call_service()` | Llama a otro servicio, mide cuánto tardó esa llamada y devuelve 502 si falla | Genera las métricas de **aristas** (dependencias) |
+| Middleware de métricas | Cuenta peticiones, mide su duración y cuántas hay en curso | Genera las variables que recolectamos |
+| `GET /health` | Responde si el servicio está vivo | Verificación previa de la campaña |
+| `GET /metrics` | Expone las métricas en formato Prometheus | De aquí lee el recolector |
+| `GET/POST /admin/load` | Lee o cambia `cpu_load` y `base_delay_ms` | **Es el mecanismo de inyección de cuellos de botella** |
+
+### 2.4 Las métricas que expone cada servicio (Prometheus)
+
+| Métrica | Tipo | Etiquetas | Qué cuenta |
+| --- | --- | --- | --- |
+| `http_requests_total` | Counter | service, method, path, status | Peticiones atendidas (acumulado) |
+| `http_request_duration_seconds` | Histogram | service, path | Latencia de cada petición, en cubetas |
+| `http_requests_in_flight` | Gauge | service | Peticiones que están siendo atendidas **ahora** |
+| `downstream_request_duration_seconds` | Histogram | service, target | Latencia de las llamadas a otros servicios |
+| `downstream_requests_total` | Counter | service, target, status | Cuántas llamadas a otros servicios y con qué resultado |
+
+Las cubetas (*buckets*) del histograma son finas, de 5 ms a 30 s: `0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.4, 0.6, 0.8, 1, 1.5, 2, 3, 4, 6, 8, 12, 20, 30` segundos. Eso permite estimar percentiles con razonable precisión alrededor de 100–400 ms, que es donde vive nuestro umbral.
+
+> **Counter vs Gauge vs Histogram.** Un *counter* solo crece (hay que restar dos lecturas para obtener una tasa). Un *gauge* sube y baja (valor instantáneo). Un *histogram* cuenta cuántas observaciones cayeron en cada rango; de ahí salen medias y percentiles.
+
+---
+
+## 3. Conceptos previos (glosario corto)
+
+| Concepto | Explicación sencilla |
+| --- | --- |
+| **Cuello de botella** | Un servicio no da abasto: sus peticiones empiezan a tardar mucho más de lo normal (o dejan de responder). |
+| **Saturación** | La CPU (o el recurso) está al límite; es una causa típica de cuello de botella. |
+| **Propagación** | Un servicio lento hace que quien lo llama también se vuelva lento, aunque su CPU esté tranquila. |
+| **Latencia** | Cuánto tarda una petición en responderse. |
+| **p95** | El valor por debajo del cual está el 95 % de las latencias. Muestra las peticiones lentas que la media oculta. |
+| **Throughput / rps** | Peticiones por segundo que atiende el servicio. |
+| **Cola** | Peticiones esperando o en curso. Aquí usamos *peticiones en vuelo* como aproximación. |
+| **Ventana** | Los últimos *W* segundos de métricas que ve el modelo (aquí W = 30 s). |
+| **Horizonte** | Cuánto hacia el futuro predecimos (aquí H = 30 s). |
+| **Episodio** | Un tramo continuo de cuello de botella en un servicio (de inicio a fin). |
+| **Inyección** | Provocar un cuello de botella a propósito con `/admin/load`. |
+| **Escenario** | El patrón de tráfico: normal, progresivo o ráfaga. |
+| **Corrida (run)** | Un experimento completo con un escenario y unas inyecciones; deja su carpeta en `data/<run_id>/`. |
+| **Campaña** | El conjunto de corridas que se ejecutan en cadena (`run_campaign.py`). |
+
+---
+
+## 4. Variables que recolectamos
+
+El recolector (`collector/collector.py`) toma **una muestra por segundo y por servicio**. Mezcla dos fuentes:
+
+- **Docker** (`docker stats`): CPU y RAM del contenedor.
+- **Prometheus `/metrics`** de cada servicio: peticiones, latencia, cola, errores.
+
+### 4.1 `metrics.csv`: una fila por servicio y por segundo
+
+| Columna | Unidad | Qué es | Cómo se calcula | Cómo leerla |
+| --- | --- | --- | --- | --- |
+| `timestamp` | s (época) | Momento de la muestra | Reloj del recolector | Sirve para alinear con eventos |
+| `servicio` | texto | Cuál de los 6 | Nombre del contenedor | Entrada del modelo (one-hot) |
+| `cpu` | % | Uso de CPU del contenedor | `docker stats`, relativo al límite de 1 CPU | 100 % = saturado. Sube por carga o por inyección |
+| `ram_mb` | MB | Memoria usada | `docker stats` | Cambia poco aquí; útil para detectar fugas |
+| `rps` | req/s | Peticiones atendidas por segundo | Δ`http_requests_total` / Δtiempo | Tráfico que recibe el servicio. Puede dar saltos por muestreo irregular |
+| `lat_mean_ms` | ms | Latencia media en el intervalo | Δsuma de duraciones / Δnúmero de peticiones | Sube cuando el servicio se degrada |
+| `lat_p95_ms` | ms | Latencia p95 en el intervalo | Se interpola dentro de las cubetas del histograma | Es la **señal principal de cuello de botella** (el etiquetado se basa en ella) |
+| `cola` | peticiones | Peticiones en curso | Gauge `http_requests_in_flight` | Si crece, el servicio no da abasto. Es el mejor indicador adelantado |
+| `err_rps` | err/s | Respuestas con error por segundo | Δ de peticiones con estado 5xx o `error` | Fallos visibles (por ejemplo 502 por una dependencia caída) |
+| `scrape_ok` | 0 / 1 | ¿Respondió `/metrics` a tiempo? | 1 si hubo respuesta antes de 0,9 s | `0` durante saturación fuerte; esas filas traen latencias vacías |
+
+**Detalles que conviene recordar**
+
+- El p95 es una **estimación** a partir de cubetas, no el percentil exacto.
+- Cuando `scrape_ok = 0` el servicio estaba tan saturado que no contestó a la medición; **eso mismo es señal de cuello de botella** y el etiquetado lo trata como tal.
+- En las corridas ya hechas (recolector anterior) el muestreo era irregular; `ml/datos.py` las remuestrea a una rejilla de 1 s.
+
+### 4.2 `edges.csv`: una fila por dependencia y por segundo
+
+Mide cada **arista** origen → destino (por ejemplo `reservaciones → pago`).
+
+| Columna | Unidad | Qué es |
+| --- | --- | --- |
+| `timestamp` | s | Momento |
+| `origen`, `destino` | texto | Quién llama y a quién |
+| `cps` | llamadas/s | Llamadas por segundo por esa arista |
+| `lat_mean_ms`, `lat_p95_ms` | ms | Latencia de esa llamada vista **desde el origen** (incluye red y espera) |
+| `err_ps` | err/s | Llamadas fallidas por segundo |
+
+Sirve para ver **dónde** se propaga un problema y, en P2, para modelos sobre grafos. En P1 el LSTM usa solo `metrics.csv`.
+
+### 4.3 `events.csv`: qué inyectamos y cuándo (verdad conocida)
+
+| Columna | Qué es |
+| --- | --- |
+| `run_id` | Corrida |
+| `escenario` | normal / progresivo / burst |
+| `servicio` | Servicio al que se inyectó carga |
+| `t_inicio`, `t_fin` | Instante real de inicio y fin (época, en segundos) |
+| `cpu_load` | Intensidad aplicada (multiplica el bucle de CPU) |
+| `rampa_s` | Segundos que tardó en llegar a la intensidad final. `0` = salto abrupto; `>0` = subida gradual |
+
+> **Ojo:** `events.csv` dice lo que *provocamos*, no lo que *ocurrió*. La etiqueta de cuello de botella se deriva después de los síntomas observados.
+
+### 4.4 Columnas que añade la consolidación (`dataset_metrics.csv`)
+
+| Columna | Significado |
+| --- | --- |
+| `run_id` | Identificador de la corrida |
+| `escenario` | Escenario de tráfico |
+| `t_rel` | Segundos desde el inicio de la carga |
+| `en_carga` | 1 si ya había tráfico en ese instante |
+| `inj_servicio` | 1 si **ese** servicio tenía inyección activa |
+| `inj_alguna` | 1 si algún servicio tenía inyección activa |
+| `inj_tipo` | `gradual` o `abrupto` |
+
+### 4.5 Lo que **no** medimos (y por qué)
+
+- **Ancho de banda de red, disco:** en este sistema no son el factor limitante.
+- **Trazas distribuidas (ids de petición):** quedan para P2.
+- **Tráfico real:** todo es simulado y usa siempre el mismo usuario (`user_id=1`).
+
+---
+
+## 5. Qué archivos genera cada corrida
+
+En `data/<run_id>/`:
+
+| Archivo | Contenido |
+| --- | --- |
+| `metrics.csv` | Variables por servicio y segundo (sección 4.1) |
+| `edges.csv` | Variables por dependencia (sección 4.2) |
+| `events.csv` | Inyecciones reales (sección 4.3) |
+| `locust_*.csv` | Estadísticas de Locust: lo que vieron los usuarios simulados (peticiones, fallos, tiempos) |
+| `meta.json` | Parámetros usados: escenario, duración, usuarios, inyecciones |
+| `OK` | Marca de corrida completa (la campaña salta las que ya la tienen) |
+
+Y tras consolidar, en `data/`: `dataset_metrics.csv`, `dataset_edges.csv` y `resumen_corridas.csv` (una fila por corrida).
+
+---
+
+## 6. Parámetros de los experimentos y las campañas
+
+### 6.1 Los escenarios de tráfico (`loadtest/locustfile.py`)
+
+Locust crea **usuarios virtuales en bucle cerrado**: cada usuario hace una petición, espera la respuesta y repite. Un usuario genera unas 1,25 req/s. Si el sistema se lentifica, los usuarios esperan más y generan menos tráfico (por eso el sistema "se frena solo").
+
+| Escenario | Cómo es la carga | Para qué sirve |
+| --- | --- | --- |
+| **normal** | Usuarios constantes (`--base-users`, 15 por defecto) | Línea base y base para inyectar cuellos de botella |
+| **progresivo** | Crece de 5 usuarios hasta `--peak-users` (60) y vuelve a bajar, en forma de triángulo (≈65 % del tiempo subiendo) | Saturación natural y gradual |
+| **burst** | Carga base con **ráfagas** a `--peak-users` (70): la primera a los 60 s, luego cada 120 s, de 25 s de duración | Picos bruscos de tráfico |
+
+Parámetros de entorno de Locust: `SCENARIO`, `DURATION`, `BASE_USERS`, `PEAK_USERS`, `BURST_START=60`, `BURST_EVERY=120`, `BURST_LEN=25`.
+
+### 6.2 El inyector (`loadtest/inyector.py`)
+
+Formato: `--inject servicio:inicio:duracion:cpu_load[:rampa]`
+
+| Parte | Significado | Ejemplo `pago:60:90:150:40` |
+| --- | --- | --- |
+| `servicio` | A quién se inyecta | `pago` |
+| `inicio` | Segundo (desde el inicio de la corrida) en que empieza | 60 |
+| `duracion` | Cuánto dura | 90 s |
+| `cpu_load` | Intensidad final (× 10.000 iteraciones por petición) | 150 |
+| `rampa` (opcional) | Segundos para subir de 0 a `cpu_load` (1 escalón por segundo). Sin rampa = salto directo | 40 s |
+
+Al terminar, el inyector **restablece** el servicio (`--reset`). También escribe `events.csv` con los tiempos reales.
+
+### 6.3 Una corrida (`run_experiment.py`)
+
+Lanza a la vez el recolector, Locust y el inyector, y guarda todo en `data/<run_id>/`.
+
+| Parámetro | Defecto | Significado |
+| --- | --- | --- |
+| `--scenario` | (obligatorio) | normal / progresivo / burst |
+| `--duration` | 600 | Duración en segundos |
+| `--inject` | ninguno | Inyecciones (se puede repetir) |
+| `--base-users` | 15 | Usuarios base |
+| `--peak-users` | 100 | Usuarios en el pico |
+| `--run-id` | auto | Nombre de la carpeta |
+
+Ejemplo: `python run_experiment.py --scenario normal --duration 150 --inject pago:40:60:150`
+
+### 6.4 La campaña (`run_campaign.py`)
+
+Ejecuta todas las corridas en cadena. Entre una y otra **reinicia los contenedores** (estado limpio) y espera `--cooldown` s.
+
+| Parámetro | Defecto | Significado |
+| --- | --- | --- |
+| `--reps` | 1 | Repeticiones de cada combinación (`--reps 2` duplica la campaña) |
+| `--load` | 150 | `cpu_load` final de las inyecciones en `normal_inj` y `burst_inj` |
+| `--only` | todos | Grupos a correr, separados por coma |
+| `--cooldown` | 20 | Pausa entre corridas (s) |
+| `--dry-run` | no | Muestra el plan y el tiempo estimado sin ejecutar |
+| `--solo-consolidar` | no | No corre nada; solo une lo ya hecho |
+| `--sin-consolidar` | no | Corre pero no consolida al final |
+| `--sin-chequeo` | no | Omite la verificación previa |
+
+La **verificación previa** comprueba que los 6 servicios responden, que una reserva atraviesa toda la cadena y que los contenedores tienen el `common.py` nuevo (métricas de dependencias y cubetas finas). Así no se pierden horas con código viejo.
+
+Si interrumpes con Ctrl+C, consolida lo terminado; al reanudar, **salta** las corridas con marca `OK` y repite la incompleta.
+
+### 6.5 El plan de la campaña (`--reps 1` = 28 corridas, ≈ 3,3 h)
+
+| Grupo | Corridas | Escenario | Duración | Usuarios | Inyección |
+| --- | --- | --- | --- | --- | --- |
+| `normal_base` | 2 | normal | 300 s | 15 | Ninguna (negativos limpios; de aquí salen los umbrales) |
+| `normal_inj` | 6 (una por servicio) | normal | 360 s | 15 | Gradual `s:60:90:150:40` (rampa de 40 s) y abrupta `s:220:60:150` |
+| `burst_inj` | 6 (una por servicio) | burst | 360 s | 15 base, pico 70 | Gradual `s:95:75:150:30` y abrupta `s:215:75:150`, esquivando las ráfagas (que caen en 60–85, 180–205 y 300–325 s) |
+| `progresivo_base` | 2 | progresivo | 360 s | 5 → 60 → 5 | Ninguna (saturación natural de `reservaciones`) |
+| `var_inj` | 12 (6 leves + 6 fuertes) | normal | 360 s | leve 15 / fuerte 20 | Leve: `cpu_load` 90, rampa 40 s. Fuerte: `cpu_load` 250, rampa 20 s. Cada una con evento gradual (60 s) y abrupto (220 s) |
+
+Cada corrida con inyección contiene **dos eventos**: uno gradual (con rampa) y uno abrupto (salto). Por eso en los resultados aparecen las causas `inyeccion_gradual` e `inyeccion_abrupto`.
+
+**Por qué hay un grupo de cada tipo**
+
+- `normal_base`, `progresivo_base`: ejemplos **sin inyección**, para que el modelo aprenda cómo es lo normal y no solo lo anómalo.
+- `normal_inj`, `burst_inj`: cuellos de botella provocados con tráfico estable y con ráfagas (más ruido).
+- `var_inj`: variedad de severidad, para no aprender un único patrón.
+
+**Pendiente de la campaña ampliada:** `--reps 2` (56 corridas, ≈ 6,6 h), recolector nuevo con muestreo regular y un grupo de inyecciones **suaves** (`cpu_load` ≈ 25–40) que se degraden despacio y sean anticipables.
+
+---
+
+## 7. Etiquetado: cómo decidimos que hay un cuello de botella
+
+Script: `ml/etiquetar.py`. Opera por servicio y por corrida.
+
+### 7.1 Definición
+
+1. **Umbral de latencia por servicio** = `max(3 × mediana de lat_p95 en corridas normal_base, 150 ms)`.
+   Resultado real: 150 ms para `eventos`, `notificaciones`, `usuarios`, `ticket` y `pago`; 292,5 ms para `reservaciones` (es más lento por naturaleza, porque orquesta).
+2. Un instante está **en cuello de botella** (`bn_ahora = 1`) si `lat_p95 > umbral` **o** el servicio no respondió a `/metrics` (`scrape_ok = 0`).
+3. Se exige que dure **al menos 3 s seguidos** (`--sostenido`) para ignorar picos aislados.
+4. Los episodios separados por **menos de 5 s** se fusionan en uno (`--fusion`).
+5. Se ignoran los **primeros 10 s** de cada corrida (arranque, `--ignorar-inicio`).
+
+### 7.2 Parámetros
+
+| Parámetro | Defecto | Efecto |
+| --- | --- | --- |
+| `--umbral-mult` | 3 | Cuántas veces la latencia normal se considera cuello de botella |
+| `--piso-ms` | 150 | Umbral mínimo (evita falsos positivos por ruido en servicios muy rápidos) |
+| `--sostenido` | 3 s | Duración mínima de un episodio |
+| `--fusion` | 5 s | Separación máxima para unir episodios |
+| `--horizonte` | 30 s | Cuánto antes del episodio se marca "se viene" |
+| `--ignorar-inicio` | 10 s | Segundos descartados al inicio |
+| `--seed` | 42 | Semilla del reparto entre entrenamiento y prueba |
+| `--sufijo` | vacío | Sufijo para guardar variantes sin pisar los archivos |
+
+### 7.3 Columnas de `dataset_etiquetado.csv` (las más importantes)
+
+| Columna | Significado |
+| --- | --- |
+| `bn_ahora` | 1 si en este instante ya hay cuello de botella |
+| `ep_id`, `ep_causa` | Episodio al que pertenece y su causa |
+| `y_30s` | **Etiqueta objetivo:** 1 si habrá cuello de botella en los próximos 30 s |
+| `y_inicio_30s` | 1 si un episodio **nuevo empieza** en los próximos 30 s |
+| `utilizable` | 1 si hay carga, pasó el arranque y el horizonte completo cabe en la corrida |
+| `evaluable` | 1 si es utilizable **y** `bn_ahora = 0` (donde se evalúa la anticipación) |
+| `umbral_ms` | Umbral aplicado a ese servicio |
+| `split`, `grupo` | Reparto de entrenamiento/prueba y grupo de la campaña |
+
+### 7.4 Causas de episodio
+
+| Causa | Qué es |
+| --- | --- |
+| `inyeccion_gradual` | Provocado por una inyección con rampa en ese servicio |
+| `inyeccion_abrupto` | Provocado por una inyección en salto |
+| `propagacion` | El servicio se degrada porque lo hace otro del que depende (o que depende de él) |
+| `natural` | Aparece por carga de tráfico (ráfagas o saturación) sin inyección en ese servicio |
+
+En esta campaña: 148 episodios = 25 graduales + 24 abruptos + 76 de propagación + 23 naturales.
+
+### 7.5 Vistas de evaluación
+
+- **Vista A (utilizable):** todos los instantes utilizables. Incluye los que ya están en cuello de botella; el modelo podría acertar solo "copiando" la situación actual.
+- **Vista B (evaluable):** solo instantes **sin** cuello de botella ahora. Ahí acertar significa **anticipar**. Es la vista principal para el informe.
+
+---
+
+## 8. Arquitectura 2: el pipeline de datos y código
 
 ```
 boleteria_nube/
-├── docker-compose.yml          # levanta los 6 servicios con límites de CPU/RAM
-├── requirements-tools.txt      # dependencias de las herramientas (en tu máquina, no en Docker)
-├── run_experiment.py           # corre UN experimento completo
-├── run_campaign.py             # corre VARIOS experimentos en cadena
-│
-├── servicios/                  # el backend (corre dentro de Docker)
-│   ├── usuarios/
-│   ├── eventos/
-│   ├── reservaciones/
-│   ├── pago/
-│   ├── ticket/
-│   └── notificaciones/
-│       ├── Dockerfile
-│       ├── requirements.txt
-│       └── app/
-│           ├── __init__.py
-│           ├── common.py       # idéntico en los 6: métricas, carga simulada
-│           └── main.py         # endpoints propios de cada servicio
-│
-├── collector/
-│   └── collector.py            # mide el sistema 1 vez por segundo
-│
+├── docker-compose.yml              ← levanta los 6 servicios (1 CPU, 256 MB cada uno)
+├── servicios/<servicio>/           ← Dockerfile, requirements.txt, app/{common,main}.py
+├── collector/collector.py          ← mide CPU/RAM (docker stats) y /metrics, cada 1 s
 ├── loadtest/
-│   ├── locustfile.py           # genera tráfico (3 escenarios)
-│   └── inyector.py             # provoca cuellos de botella controlados
-│
+│   ├── locustfile.py               ← escenarios de tráfico
+│   └── inyector.py                 ← provoca cuellos de botella
+├── run_experiment.py               ← UNA corrida (recolector + locust + inyector)
+├── run_campaign.py                 ← TODAS las corridas + consolidación
 ├── ml/
-│   └── graficar_corrida.py     # grafica una corrida para validarla
-│
-└── data/                       # resultados: una carpeta por corrida
-    ├── dataset_metrics.csv     # (lo genera run_campaign al final) todas las corridas unidas
-    ├── dataset_edges.csv
-    ├── resumen_corridas.csv
-    └── <run_id>/
-        ├── metrics.csv
-        ├── edges.csv           # métricas por dependencia (origen → destino)
-        ├── events.csv          # solo si hubo inyección
-        ├── locust_stats.csv (y otros locust_*.csv)
-        ├── meta.json
-        ├── grafica.png         # si la graficaste
-        └── OK                  # lo pone run_campaign al terminar bien
+│   ├── graficar_corrida.py         ← gráfica de una corrida (4 paneles)
+│   ├── etiquetar.py                ← pone etiquetas y episodios
+│   ├── datos.py                    ← carga, ventanas y funciones de métricas
+│   ├── baseline.py                 ← umbral CPU>80 % y persistencia
+│   └── entrenar.py                 ← LSTM con validación cruzada
+└── data/
+    ├── <run_id>/                   ← una carpeta por corrida
+    ├── dataset_metrics.csv, dataset_edges.csv, resumen_corridas.csv
+    ├── dataset_etiquetado.csv, episodios.csv, umbrales.json
+    └── resultados/                 ← tablas, gráficas y modelo entrenado
 ```
 
-### Qué corre dónde
+Flujo de datos:
 
-| Parte | Dónde corre | Cómo se inicia |
-|---|---|---|
-| `servicios/*` | Contenedores Docker | `docker compose up -d --build` |
-| `collector`, `loadtest`, `run_*.py`, `ml/` | Tu máquina (Python) | `python run_experiment.py ...` |
-
-Los scripts de tu máquina hablan con los servicios por `localhost` y leen las estadísticas de los contenedores a través del SDK de Docker. Por eso Docker Desktop debe estar abierto.
-
-### Qué aún no existe
-
-Estos archivos quedan para la siguiente etapa: `ml/etiquetar.py` (generar las etiquetas), `ml/entrenar.py` (LSTM) y `ml/evaluar.py` (Precision, Recall, F1, Lead Time y comparación contra el baseline).
+```
+ run_campaign.py ──► data/<run>/*.csv ──► consolidar ──► dataset_metrics.csv
+                                                              │
+                                                  etiquetar.py │
+                                                              ▼
+                                                 dataset_etiquetado.csv + episodios.csv
+                                                              │
+                                  ┌───────────────────────────┴─────────────┐
+                              baseline.py                              entrenar.py
+                            (umbral, persistencia)                       (LSTM)
+                                                                              │
+                                                                data/resultados/*.csv, *.png
+```
 
 ---
 
-## 2. La aplicación: 6 microservicios
+## 9. Arquitectura 3: el baseline y el modelo LSTM
 
-Una boletería simulada. Cada reserva recorre una cadena de llamadas síncronas:
+### 9.1 Qué entra al modelo
+
+Para cada servicio y cada segundo *t*, el modelo ve una **ventana de 30 s** (de *t-29* a *t*). Cada segundo es un vector de **14 valores**:
+
+| Parte | Cantidad | Detalle |
+| --- | --- | --- |
+| Métricas | 7 | `cpu, ram_mb, rps, lat_mean_ms, lat_p95_ms, cola, err_rps` (estandarizadas con la media y desviación del entrenamiento) |
+| Dato faltante | 1 | 1 si ese segundo no tenía medición |
+| Servicio | 6 | One-hot del servicio (cuál de los 6) |
+
+Salida: **una probabilidad** (0 a 1) de que haya cuello de botella en los próximos 30 s.
+
+### 9.2 ¿Qué es un LSTM, en simple?
+
+Una red neuronal para **series de tiempo**. Lee la ventana segundo a segundo y mantiene una "memoria" interna que decide qué recordar y qué olvidar. Al final del segundo 30 resume lo visto, y una capa lineal convierte ese resumen en la probabilidad. Así puede captar **tendencias** (la cola sube, la latencia se acelera) que un umbral instantáneo no ve.
 
 ```
-                         ┌──────────┐
-                    ┌───►│ usuarios │
-                    │    └──────────┘
-┌───────────────┐   │    ┌──────────┐
-│ reservaciones │───┼───►│ eventos  │
-└───────────────┘   │    └──────────┘
-                    │    ┌──────────┐    ┌──────────┐    ┌────────────────┐
-                    └───►│   pago   │───►│  ticket  │───►│ notificaciones │
-                         └──────────┘    └──────────┘    └────────────────┘
+ventana 30 s × 14 valores ─► LSTM (1 capa, 64 unidades) ─► último paso ─► capa lineal ─► sigmoide ─► P(cuello de botella en 30 s)
 ```
 
-| Servicio | Puerto | Llama a | Rol |
-|---|---|---|---|
-| usuarios | 8001 | n/a | Valida que el usuario exista |
-| eventos | 8002 | n/a | Descuenta boletos (con lock) y devuelve el precio |
-| reservaciones | 8003 | usuarios, eventos, pago | Orquestador: recibe la petición del cliente |
-| pago | 8004 | ticket | Registra el cobro |
-| ticket | 8005 | notificaciones | Genera el código del boleto |
-| notificaciones | 8006 | n/a | Final de la cadena |
+### 9.3 Hiperparámetros (`ml/entrenar.py`)
 
-Cada petición `POST /reservations` pasa **una vez por cada uno de los 6 servicios**, así que en carga normal todos reciben aproximadamente los mismos requests por segundo.
+| Parámetro | Defecto | Significado |
+| --- | --- | --- |
+| `--folds` | 4 | Número de particiones de la validación cruzada |
+| `--epocas` | 15 | Máximo de pasadas por los datos |
+| `--paciencia` | 3 | Épocas sin mejorar antes de parar (*early stopping*) |
+| `--hidden` | 64 | Unidades del LSTM |
+| `--batch` | 256 | Ejemplos por actualización |
+| `--lr` | 0,001 | Tasa de aprendizaje |
+| `--seed` | 42 | Semilla |
+| `--cpu` | 80 | Umbral del baseline de CPU |
+| `--sin-final` | no | No entrena el modelo final (más rápido) |
 
-### `docker-compose.yml`
+Pérdida: entropía cruzada binaria con `pos_weight`, porque los instantes "peligrosos" son pocos frente a los normales.
 
-- Mapea `8001..8006` hacia el puerto interno 8000 de cada contenedor.
-- **`cpus: "1.0"` y `mem_limit: 256m`** por servicio. Estos límites son los que hacen que un servicio se sature de forma realista, y el collector usa el límite de CPU como referencia (100% = usa su cupo completo).
-- `container_name` igual al nombre del servicio, porque el collector busca los contenedores por ese nombre.
-- Variables de entorno: `SERVICE_NAME`, `BASE_DELAY_MS`, `CPU_LOAD` y las URLs de los servicios que cada uno llama.
+### 9.4 Cómo se evita hacer trampa (protocolo)
 
-### `common.py` (idéntico en los 6 servicios)
+- **Validación cruzada agrupada por corrida:** ninguna corrida aparece a la vez en entrenamiento y prueba. Si no, el modelo memorizaría la corrida.
+- Dentro de cada fold, ~15 % de las corridas de entrenamiento se usan como **validación** para decidir cuándo parar y **qué umbral de decisión** usar (el que maximiza F1 en vista B, probando de 0,05 a 0,95).
+- La **normalización** se calcula solo con datos de entrenamiento.
+- Se reúnen las predicciones de los 4 folds y se evalúa todo junto, además de por fold.
+- Al final se entrena un **modelo final** con todas las corridas (`models/lstm_final.pt`), con el umbral = mediana de los umbrales de los folds.
 
-Es la capa de medición y experimentación, separada de la lógica de negocio.
+### 9.5 Los métodos que se comparan
 
-| Elemento | Función |
-|---|---|
-| `config` | `base_delay_ms` y `cpu_load` actuales. Se leen del entorno al arrancar y se pueden cambiar en caliente |
-| `simulate_work()` | Espera `base_delay_ms` y ejecuta un bucle de `cpu_load × 10.000` iteraciones. **Es lo que fabrica el cuello de botella** |
-| `call_service()` | Llamada HTTP a otro servicio; los fallos se devuelven como 502 |
-| `create_app()` | Crea la app con el middleware de métricas y los endpoints de utilidad |
+| Método | Regla | Para qué está |
+| --- | --- | --- |
+| **Umbral CPU>80 %** | Alarma si la CPU del servicio supera 80 % | Baseline que pide el enunciado |
+| **Persistencia** | Alarma si ya hay cuello de botella ahora | Referencia mínima: la etiqueta deriva de la latencia, que también es entrada del modelo. En vista B vale 0 por construcción |
+| **LSTM** | Alarma si P ≥ umbral elegido en validación | La primera versión de IA |
 
-**Métricas Prometheus que expone cada servicio en `GET /metrics`:**
-
-| Métrica | Tipo | Etiquetas | Qué mide |
-|---|---|---|---|
-| `http_requests_total` | Counter | service, method, path, status | Requests atendidos |
-| `http_request_duration_seconds` | Histogram | service, path | Latencia de cada request |
-| `http_requests_in_flight` | Gauge | service | Requests que están siendo procesados ahora mismo |
-
-- Los **buckets** del histograma van de 5 ms a 30 s (20 valores: 0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.4, 0.6, 0.8, 1, 1.5, 2, 3, 4, 6, 8, 12, 20, 30). Son finos entre 100 ms y 4 s a propósito, que es donde se decide si un servicio está degradado.
-- El middleware **no mide** `/metrics` ni `/health`.
-- La etiqueta `path` usa la plantilla de la ruta (`/users/{user_id}`) y no el valor real, para no generar miles de series.
-- La latencia de un servicio **incluye el tiempo de espera de los servicios que llama**. Por eso la latencia de `reservaciones` es la suma de toda la cadena.
-- `http_requests_in_flight` es el proxy de **longitud de cola**.
-
-**Endpoints que reciben todos los servicios:**
-
-| Endpoint | Función |
-|---|---|
-| `GET /health` | Responde `{"status":"ok"}` |
-| `GET /metrics` | Métricas en formato Prometheus |
-| `GET /admin/load` | Muestra `base_delay_ms` y `cpu_load` actuales |
-| `POST /admin/load` | Cambia `cpu_load` y/o `base_delay_ms` sin reiniciar |
-
----
-
-## 3. Las herramientas de experimentación
-
-### 3.1 `collector/collector.py`: qué se mide
-
-Cada segundo escribe **una fila por servicio** en `metrics.csv`. Toma los datos de dos fuentes: Docker (CPU y RAM) y el `/metrics` de cada servicio (todo lo demás).
-
-| Columna | Descripción | Cómo se calcula |
-|---|---|---|
-| `timestamp` | Instante del muestreo (epoch, segundos) | Reloj de la máquina, con ticks alineados cada 1 s |
-| `servicio` | Nombre del servicio | n/a |
-| `cpu` | CPU en % **respecto al límite del contenedor** (100 = usa todo su `cpus`) | Núcleos usados = (Δ uso CPU / Δ CPU del sistema) × nº de CPUs; luego ÷ `CPU_LIMIT` × 100 |
-| `ram_mb` | Memoria en MB | `usage` menos la caché de archivos inactiva (`inactive_file` o `cache`) |
-| `rps` | Requests por segundo | Δ de `http_requests_total` ÷ Δ de tiempo |
-| `lat_mean_ms` | Latencia media del último intervalo | Δ de `_sum` ÷ Δ de `_count` × 1000. Vale 0 si no hubo requests |
-| `lat_p95_ms` | Latencia p95 del último intervalo | Estimada con los Δ de los buckets del histograma, con interpolación lineal |
-| `cola` | Requests en curso (longitud de cola) | Valor instantáneo de `http_requests_in_flight` |
-| `err_rps` | Respuestas 5xx por segundo | Δ de `http_requests_total` con `status` 5xx ÷ Δ de tiempo |
-| `scrape_ok` | 1 si `/metrics` respondió, 0 si no | Timeout de 1.5 s |
-
-**Cómo funciona por dentro:**
-
-- La lectura de Docker usa un hilo por contenedor con `stats(stream=True)`, que entrega una muestra cada ~1 s. El collector siempre toma la más reciente.
-- Los 6 `/metrics` se consultan **en paralelo** para no perder el ritmo.
-- Todas las tasas son **diferencias entre dos lecturas consecutivas**, es decir, del último intervalo y no acumuladas desde el arranque.
-- Si un contador baja (contenedor reiniciado), esa fila queda con las columnas de tasas vacías en lugar de un valor falso.
-- `CPU_LIMIT = 1.0` está escrito en el script y **debe coincidir** con `cpus` del `docker-compose.yml`.
-
-**Correspondencia con lo que pide el PDF:**
-
-| Pide el PDF | Columna |
-|---|---|
-| CPU | `cpu` |
-| RAM | `ram_mb` |
-| Latencia | `lat_mean_ms`, `lat_p95_ms` |
-| Requests/s | `rps` |
-| Longitud de cola | `cola` |
-
-### 3.2 `loadtest/locustfile.py`: el tráfico
-
-Cada usuario virtual hace un `POST /reservations` (usuario 1, evento aleatorio entre 1 y 3, cantidad 1), espera entre 0.3 y 1.0 s y repite. Todo el tráfico entra por `reservaciones` (puerto 8003).
-
-El escenario se elige con la variable `SCENARIO`:
-
-| Escenario | Comportamiento | Parámetros (por defecto) |
-|---|---|---|
-| `normal` | Usuarios constantes | `BASE_USERS=15` |
-| `progresivo` | Sube de 5 a `PEAK_USERS` durante el 65% del tiempo y vuelve a bajar a 5 | `PEAK_USERS` |
-| `burst` | Carga base con picos súbitos | `BASE_USERS=15`, `PEAK_USERS`, picos de `BURST_LEN=25` s cada `BURST_EVERY=120` s desde `BURST_START=60` s |
-
-Con 360 s, los picos del burst caen en los segundos 60-85, 180-205 y 300-325.
-
-**Importante:** Locust funciona en **circuito cerrado**. Cada usuario espera la respuesta antes de enviar la siguiente petición. Por eso la cola de un servicio no puede superar el número de usuarios activos, y cuando el sistema se satura, `rps` se estanca en vez de seguir creciendo.
-
-### 3.3 `loadtest/inyector.py`: cuellos de botella controlados
-
-Cambia `cpu_load` de un servicio mediante `POST /admin/load` en momentos programados, y guarda los **tiempos reales** de inicio y fin en `events.csv`. Esos tiempos son la referencia para etiquetar.
-
-**Formato:** `--inject servicio:inicio_s:duracion_s:cpu_load[:rampa_s]`
-
-| Parte | Significado |
-|---|---|
-| `inicio_s` | Segundos desde el inicio de la carga |
-| `duracion_s` | Duración total de la inyección (**incluye** la rampa) |
-| `cpu_load` | Valor final de la carga |
-| `rampa_s` | Opcional. Segundos para subir de 0 al valor final, un paso por segundo. Sin rampa, es un escalón abrupto |
-
-Ejemplos:
-
-- `pago:60:60:150` → escalón: a los 60 s sube a 150 de golpe, durante 60 s.
-- `pago:60:90:150:40` → rampa: sube de 0 a 150 entre los 60 y 100 s, y se mantiene hasta los 150 s.
-
-Reglas: las inyecciones de una misma corrida se ejecutan de forma secuencial (no pueden solaparse), y al terminar, o si se interrumpe, **todos los servicios vuelven a `cpu_load=0`**. `python loadtest/inyector.py --reset` lo hace a mano.
-
-**`events.csv`:**
-
-| Columna | Descripción |
-|---|---|
-| `run_id`, `escenario` | Identifican la corrida |
-| `servicio` | Servicio inyectado |
-| `t_inicio`, `t_fin` | Epoch real del inicio y del fin de la inyección |
-| `cpu_load` | Valor final de la carga |
-| `rampa_s` | 0 si fue abrupta, o los segundos de rampa |
-
-### 3.4 `run_experiment.py`: una corrida completa
-
-Coordina las tres herramientas con el mismo `run_id`:
-
-1. Pone todos los servicios en `cpu_load=0`.
-2. Arranca el collector y espera 5 s (línea base en reposo).
-3. Arranca Locust (modo sin interfaz) y el inyector al mismo tiempo.
-4. Cuando Locust termina, espera 15 s más para registrar la recuperación.
-5. Detiene todo y vuelve a resetear la carga.
-
-```powershell
-python run_experiment.py --scenario normal --duration 300
-python run_experiment.py --scenario burst --duration 360 --inject pago:95:75:150:30 --peak-users 70
-```
-
-| Argumento | Por defecto | Descripción |
-|---|---|---|
-| `--scenario` | (obligatorio) | `normal`, `progresivo` o `burst` |
-| `--duration` | 600 | Segundos de carga |
-| `--inject` | ninguno | Repetible, formato del inyector |
-| `--base-users` | 15 | Usuarios base |
-| `--peak-users` | 100 | Usuarios en el pico |
-| `--run-id` | automático | Por defecto: `escenario_servicio_fecha` |
-
-La carpeta `data/<run_id>/` contiene al terminar:
+### 9.6 Archivos que produce `entrenar.py` (en `data/resultados/`)
 
 | Archivo | Contenido |
-|---|---|
-| `metrics.csv` | Las métricas por servicio y segundo (tabla de la sección 3.1) |
-| `events.csv` | Inyecciones reales (solo si hubo) |
-| `locust_stats.csv`, `locust_stats_history.csv`, `locust_failures.csv`, ... | Medición **del lado del cliente**: latencia vista por el usuario y fallos |
-| `meta.json` | Escenario, duración, usuarios, inyecciones y `t0_locust` (el instante en que empezó la carga) |
-
-Una corrida de `--duration D` genera unas `6 × (D + 25)` filas en `metrics.csv`.
-
-### 3.5 `run_campaign.py`: muchas corridas en cadena
-
-Ejecuta un plan de corridas llamando a `run_experiment.py`, para generar el dataset completo sin supervisión.
-
-```powershell
-python run_campaign.py --dry-run             # solo ver el plan y el tiempo
-python run_campaign.py --only normal_base    # un grupo
-python run_campaign.py                       # todo
-```
-
-**Plan por defecto (28 corridas, unas 3.3 h):**
-
-| Grupo | Corridas | Contenido |
-|---|---|---|
-| `normal_base` | 2 | Carga constante, 300 s, sin inyección |
-| `normal_inj` | 6 | Carga constante, 360 s, inyección en cada servicio |
-| `burst_inj` | 6 | Picos de tráfico (70 usuarios), 360 s, inyección en cada servicio |
-| `progresivo_base` | 2 | Tráfico creciente y decreciente (60 usuarios), 360 s, sin inyección |
-| `var_inj` | 12 | Inyección **leve** (`cpu_load` 90, 15 usuarios) y **fuerte** (250, 20 usuarios) en cada servicio, 360 s |
-
-Cada corrida con inyección contiene **dos eventos**: uno **gradual** (rampa de 40 s o 30 s) y uno **abrupto**, con `cpu_load` 150.
-
-**Comportamiento:**
-
-- **Reinicia los contenedores** antes de cada corrida (`docker compose restart`). Esto evita que las listas en memoria agoten los 256 MB, y cada corrida parte de un estado limpio.
-- **Reanuda:** al terminar bien, deja un archivo `OK` en la carpeta de la corrida. Si se interrumpe y se vuelve a ejecutar, se salta las corridas con `OK` y repite la incompleta.
-- **Opciones:** `--reps N` (más repeticiones), `--load N` (cpu_load de las inyecciones), `--only grupo1,grupo2`, `--cooldown N` (pausa entre corridas).
-
-### 3.6 `ml/graficar_corrida.py`: validar una corrida
-
-```powershell
-python ml/graficar_corrida.py                          # última corrida
-python ml/graficar_corrida.py data\<run_id> --smooth 3 --log --show
-```
-
-Genera `grafica.png` con 4 paneles (latencia p95, cola, CPU y requests/s, una línea por servicio), las inyecciones sombreadas en rojo y el inicio y fin de la carga en líneas grises. Si hay inyecciones, también imprime una tabla "fuera vs dentro" para el servicio inyectado y para `reservaciones`.
-
-Opciones: `--smooth N` (media móvil de N segundos), `--log` (latencia en escala logarítmica), `--show` (abre la ventana además de guardar).
+| --- | --- |
+| `metricas_A.csv`, `metricas_B.csv` | Precision, recall, F1 por método, vistas A y B |
+| `por_escenario.csv` | Métricas por grupo de la campaña |
+| `por_fold.csv` | Métricas por fold (para media ± desviación) |
+| `lead_time_LSTM.csv`, `lead_time_threshold.csv` | Detalle por episodio: ¿detectado? ¿con cuánta anticipación? |
+| `predicciones.csv` | Probabilidades por servicio y segundo |
+| `config.json` | Configuración usada |
+| `comparacion.png`, `ejemplo_timeline.png` | Gráficas de comparación y un ejemplo temporal |
+| `models/lstm_final.pt` | Modelo final |
 
 ---
 
-## 4. Referencia rápida de comandos
+## 10. Métricas de evaluación
+
+Se cuenta cada **servicio-segundo** como una decisión: "¿alarmo o no?".
+
+| Resultado | Significado |
+| --- | --- |
+| **TP** (verdadero positivo) | Alarmé y de verdad venía un cuello de botella |
+| **FP** (falso positivo) | Alarmé y no venía nada (falsa alarma) |
+| **FN** (falso negativo) | No alarmé y sí venía (se escapó) |
+| **TN** (verdadero negativo) | No alarmé y no venía nada |
+
+| Métrica | Fórmula | Cómo interpretarla |
+| --- | --- | --- |
+| **Precision** | TP / (TP + FP) | De las alarmas que doy, qué fracción es real. Baja = muchas falsas alarmas |
+| **Recall** | TP / (TP + FN) | De los cuellos de botella que venían, qué fracción detecté |
+| **F1** | 2·P·R / (P + R) | Equilibrio entre ambas |
+| **fpr** | FP / (FP + TN) | Fracción de instantes normales en que alarmé |
+| **Prediction Lead Time** | segundos entre la **primera alarma** y el **inicio del episodio** (máximo 30 s) | Cuánto margen tiene un operador para reaccionar |
+
+**Cómo se calcula el lead time aquí:** para cada episodio se mira la ventana de hasta 30 s **anterior** a su inicio en que el servicio estaba libre. Si hubo una alarma, el lead es el tiempo desde la primera alarma hasta el inicio. Se excluyen episodios con menos de 3 s libres antes.
+
+**Trampa a evitar:** una alarma encendida *siempre* da lead de 30 s y recall alto, pero con precision baja. Por eso **el lead time nunca se reporta solo**: siempre junto a precision y fpr.
+
+---
+
+## 11. Comandos en orden
+
+Desde la raíz del proyecto (con Docker Desktop abierto):
 
 ```powershell
-# Levantar / reconstruir los servicios
+# 0. Levantar los servicios (primera vez o tras cambiar código)
 docker compose up -d --build
 
-# Probar un flujo a mano
-curl -X POST http://localhost:8003/reservations -H "Content-Type: application/json" -d '{"user_id":1,"event_id":1,"quantity":2}'
-
-# Un experimento
-python run_experiment.py --scenario normal --duration 150 --inject pago:40:90:150:40
-
-# Una campaña
+# 1. Ver el plan sin ejecutar
 python run_campaign.py --dry-run
-python run_campaign.py
 
-# Ver los resultados
-python ml/graficar_corrida.py data\<run_id> --smooth 3
+# 2. Prueba corta de un grupo
+python run_campaign.py --only normal_base
+
+# 3. Campaña completa + consolidar
+python run_campaign.py            # o: --reps 2 para la versión ampliada
+
+# 4. (opcional) Ver una corrida
+python ml/graficar_corrida.py data/<run_id> --smooth 3
+
+# 5. Etiquetar
+python ml/etiquetar.py
+
+# 6. Baseline
+python ml/baseline.py
+
+# 7. LSTM (prueba rápida y luego completo)
+python ml/entrenar.py --epocas 3 --sin-final
+python ml/entrenar.py
 ```
 
----
-
-## 5. Métricas de evaluación (etapa siguiente)
-
-Las que pide el PDF. Se calcularán igual para el baseline y para el LSTM, sobre las mismas corridas de prueba.
-
-| Métrica | Pregunta que responde |
-|---|---|
-| Precision | De las alarmas emitidas, ¿cuántas correspondían a un cuello de botella real? |
-| Recall | De los cuellos de botella reales, ¿cuántos se detectaron? |
-| F1 | Equilibrio entre Precision y Recall |
-| Prediction Lead Time | ¿Cuántos segundos antes del inicio del cuello de botella se emitió la primera alarma correcta? |
-
-Aún falta definir (y justificar antes de comparar):
-
-- **Qué es un cuello de botella en el instante t.** Una propuesta es un criterio de latencia, por ejemplo p95 por encima de un umbral sostenido varios segundos, idéntico para todas las corridas. Un umbral de cola fijo no sirve, porque con Locust en circuito cerrado la cola está acotada por el número de usuarios.
-- **Qué cuenta como alarma correcta.** Por ejemplo, la alarma emitida dentro de los 30 s previos al inicio del evento. Las alarmas fuera de esa ventana son falsos positivos.
-
-El **baseline** es la regla `CPU > 80%`. Los datos muestran que falla en un caso importante: cuando `pago` se satura, `reservaciones` se degrada pero su CPU **baja** (está esperando), así que la regla nunca la detecta.
+Para una variante de etiquetado más permisiva, sin pisar los archivos: `python ml/etiquetar.py --piso-ms 50 --sufijo _piso50` y luego `--sufijo _piso50` en `baseline.py` y `entrenar.py`.
 
 ---
 
-## 6. Limitaciones conocidas de los datos
+## 12. Limitaciones que debes conocer
 
-- **Todo corre en una sola máquina.** Locust, el collector, Docker y los servicios compiten por la misma CPU. Eso añade ruido y hace que cada corrida dependa del equipo. Mantén el PC sin otras tareas pesadas durante las corridas.
-- **Locust en circuito cerrado:** la cola nunca supera el número de usuarios activos y el `rps` se estanca al saturarse.
-- **La latencia p95 es una estimación.** Sale de un histograma con buckets, no de las muestras individuales, así que su precisión depende de la anchura del bucket donde cae.
-- **Filas con `scrape_ok=0`:** cuando un servicio está muy saturado puede no responder a `/metrics` a tiempo. Esas filas son información (el servicio dejó de responder), no errores. No las borres sin pensar.
-- **Segundos en reposo:** al inicio y al final de cada corrida hay filas con `rps=0` y latencia 0. Conviene filtrarlas o recortarlas al analizar.
-- **Pico final tras Locust:** al parar, la cola acumulada se vacía de golpe y aparece un pico de `rps` y latencia. No es comportamiento normal; recórtalo o márcalo al etiquetar.
-- **El estado vive en memoria y se pierde al reiniciar.** Es intencional: cada corrida parte de cero.
-- **`cpu_load=150` para todos los servicios** es un valor de partida validado solo en `pago`. Los demás servicios pueden requerir ajuste.
-- **Una corrida tiene pocos eventos.** Para entrenar y evaluar hacen falta varias repeticiones, y la división entre entrenamiento y prueba debe hacerse **por corrida**, no por filas al azar.
-- **Python 3.8** funciona para las herramientas actuales, pero ya no tiene soporte oficial.
-
-
----
-
-## 7. Actualización: interacción entre servicios y consolidación del dataset
-
-### 7.1 Métricas de dependencias (`edges.csv`)
-
-Cada servicio que llama a otro mide ahora **cada arista** de la cadena, desde el lado de quien llama. `common.py` expone dos métricas nuevas:
-
-| Métrica | Tipo | Etiquetas | Qué mide |
-|---|---|---|---|
-| `downstream_request_duration_seconds` | Histogram | service, target | Latencia de cada llamada a otro servicio (red + espera al destino) |
-| `downstream_requests_total` | Counter | service, target, status | Llamadas realizadas y su resultado (`error` si no hubo respuesta) |
-
-El collector las convierte en `edges.csv`, una fila por dependencia y segundo:
-
-| Columna | Descripción |
-|---|---|
-| `timestamp` | Instante del muestreo |
-| `origen`, `destino` | Servicio que llama y servicio llamado |
-| `cps` | Llamadas por segundo |
-| `lat_mean_ms`, `lat_p95_ms` | Latencia de la llamada, media y p95 |
-| `err_ps` | Llamadas fallidas (5xx o sin respuesta) por segundo |
-
-Las **5 aristas** de la aplicación son: `reservaciones → usuarios`, `reservaciones → eventos`, `reservaciones → pago`, `pago → ticket` y `ticket → notificaciones`.
-
-Para qué sirven:
-
-- **Localizar la causa.** La latencia de un servicio incluye la espera a los que llama. Comparar la latencia propia del servicio con la de sus aristas permite separar el tiempo que pasa dentro del servicio de la propagación desde un destino lento.
-- **Segundo parcial.** Son las relaciones entre servicios que usará la Temporal GNN, con una característica medida por cada arista.
-
-Si un servicio no responde a `/metrics` en un segundo dado, ese segundo no genera filas de aristas para él.
-
-### 7.2 Verificación previa de `run_campaign.py`
-
-Antes de empezar, la campaña comprueba que los contenedores y el collector tienen el código actualizado. Hace una reserva de prueba y revisa que `/metrics` de `reservaciones` incluya las métricas de dependencias y los buckets finos de latencia, y que `collector.py` escriba `edges.csv`. Si algo está desactualizado, se detiene con un mensaje claro y no gasta horas generando datos incompletos. Se puede omitir con `--sin-chequeo`.
-
-### 7.3 Consolidación automática
-
-Al terminar (o al interrumpirse con Ctrl+C), `run_campaign.py` une todas las corridas completas (las que tienen el archivo `OK`) y genera en `data/`:
-
-| Archivo | Contenido |
-|---|---|
-| `dataset_metrics.csv` | Métricas por servicio y segundo de todas las corridas |
-| `dataset_edges.csv` | Métricas por dependencia de todas las corridas |
-| `resumen_corridas.csv` | Una fila por corrida: escenario, duración, filas, eventos, servicios inyectados |
-
-Columnas que se añaden a `dataset_metrics.csv`:
-
-| Columna | Significado |
-|---|---|
-| `run_id`, `escenario` | Identifican la corrida |
-| `t_rel` | Segundos desde el inicio de la carga de Locust |
-| `en_carga` | 1 si la fila cae dentro de la ventana de carga |
-| `inj_servicio` | 1 si **ese** servicio tenía una inyección activa en ese instante |
-| `inj_alguna` | 1 si había alguna inyección activa en la corrida |
-| `inj_tipo` | `gradual`, `abrupto` o vacío |
-
-Importante: estas columnas son la verdad de **lo que se inyectó**. No son la etiqueta de cuello de botella, que se deriva de los síntomas (latencia, cola) en el paso de etiquetado. Un servicio puede estar saturado sin tener inyección propia (por ejemplo `reservaciones` cuando se satura `pago`), y una inyección leve puede no producir saturación.
-
-También se puede consolidar sin correr nada: `python run_campaign.py --solo-consolidar`.
-
-### 7.4 Opciones de `run_campaign.py`
-
-| Opción | Efecto |
-|---|---|
-| `--dry-run` | Muestra el plan y el tiempo estimado, sin ejecutar |
-| `--only g1,g2` | Corre solo esos grupos |
-| `--reps N` | Repite el plan N veces |
-| `--load N` | `cpu_load` de las inyecciones de los grupos `normal_inj` y `burst_inj` |
-| `--cooldown N` | Pausa entre corridas (20 s por defecto) |
-| `--solo-consolidar` | Solo une los datos ya existentes |
-| `--sin-consolidar` | No consolida al final |
-| `--sin-chequeo` | Omite la verificación previa |
+- **Toda inyección satura**, incluso la "leve": faltan degradaciones lentas y suaves (más anticipables).
+- **La etiqueta sale de la latencia**, que además es una entrada del modelo; por eso existe la persistencia como referencia.
+- **Lo abrupto no se puede anticipar:** sin señal previa en las métricas, ningún modelo puede avisar a tiempo.
+- **Conjunto de prueba pequeño** (decenas de episodios por tipo; solo 2 corridas de `progresivo_base`).
+- **Todo corre en una sola máquina:** hay ruido por contención y, bajo saturación fuerte, el `/metrics` a veces no responde (`scrape_ok = 0`).
+- **Muestreo irregular** en las corridas de la primera campaña; el p95 es aproximado (cubetas de histograma).
+- **Tráfico simulado y simple:** todas las peticiones usan el mismo usuario.
+- **Resultados actuales (resumen):** el LSTM supera al umbral CPU>80 % en recall y F1 (≈ 0,71 y 0,40 contra 0,02 y 0,04), con precision baja (≈ 0,29) y anticipación real de unos 2–11 s en inyecciones graduales; el umbral gana en `progresivo_base` (solo 2 corridas).
