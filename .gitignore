@@ -1,0 +1,8 @@
+.claude/settings.local.json
+
+# datos de las campañas, resultados y modelos (se regeneran con run_campaign.py y ml/)
+data/
+*.pt
+
+__pycache__/
+*.pyc
