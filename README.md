@@ -20,6 +20,7 @@ Esta guía explica **qué medimos, por qué, cómo se genera cada dato, qué par
 11. [Comandos en orden](#11-comandos-en-orden)
 12. [Limitaciones que debes conocer](#12-limitaciones-que-debes-conocer)
 13. [Resultados del modelo final (v7)](#13-resultados-del-modelo-final-v7)
+14. [Demo](#14-demo)
 
 ---
 
@@ -612,3 +613,36 @@ Para una variante de etiquetado más permisiva, sin pisar los archivos: `python 
 | **v7** | **80 corridas (2 repeticiones)** | **0,32*** | 9,0 | Más datos: +0,06 de F1 sin más falsas alarmas |
 
 \* Desde v5 cambia la etiqueta, así que su F1 no se compara directamente con el de v1–v4. La configuración de v4 con 80 corridas y la etiqueta original llega a F1 0,50, pero esa etiqueta cuenta como cuello de botella la lentitud heredada.
+
+---
+
+## 14. Demo
+
+`ml/demo.py` muestra el modelo v7 funcionando: una tabla que se actualiza cada segundo con la CPU, la p95 y la cola de cada servicio, la probabilidad de cuello de botella en los próximos 30 s, la alarma de v7, la de la regla CPU > 80 % y el estado real. Cuando un servicio entra en cuello de botella, dice con cuántos segundos de anticipación avisó cada método (lead time honesto).
+
+### 14.1 Modo repetición (recomendado para presentar)
+
+No necesita Docker y siempre muestra lo mismo. Reproduce una corrida grabada con las predicciones de la **validación cruzada**: cada corrida la predijo un modelo que no la vio al entrenar.
+
+```powershell
+python ml/demo.py --replay suave_inj_40_ticket_r2 --velocidad 2
+```
+
+En esa corrida `ticket` se degrada poco a poco: **v7 avisa 27 s antes** y la regla de CPU no lo detecta. Más adelante llega una inyección abrupta (t = 230 s): ninguno de los dos la anticipa, lo que ilustra el límite del modelo.
+
+### 14.2 Modo en vivo
+
+Mide el sistema real con el modelo final (`lstm_final.pt`). Las entradas se arman con las mismas funciones del entrenamiento (verificado: diferencia máxima 2 × 10⁻⁷).
+
+```powershell
+docker compose up -d                       # terminal 1: los servicios
+python ml/demo.py                          # terminal 2: la tabla en vivo
+python run_experiment.py --scenario normal --duration 280 --run-id demo_pago `
+    --inject pago:70:170:40:150            # terminal 3: degradación gradual y suave en pago
+```
+
+- Espera 60 s **con tráfico** antes de predecir: el arranque de Locust confunde al modelo en `reservaciones`.
+- En vivo el resultado varía de una corrida a otra, igual que en la evaluación: v7 detecta el 77 % de los episodios graduales, no todos. Para una presentación es más seguro el modo repetición.
+- Las ráfagas (`--scenario burst`) y las inyecciones abruptas saturan de golpe: sirven para mostrar que ningún método puede anticiparlas y que ambos las detectan en ~1 s.
+
+Opciones: `--umbral` (corte de la alarma), `--log archivo.csv` (guarda cada segundo), `--sin-pantalla` (texto en vez de tabla), `--duracion` (segundos).
