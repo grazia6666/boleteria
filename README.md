@@ -19,6 +19,7 @@ Esta guía explica **qué medimos, por qué, cómo se genera cada dato, qué par
 10. [Métricas de evaluación](#10-métricas-de-evaluación)
 11. [Comandos en orden](#11-comandos-en-orden)
 12. [Limitaciones que debes conocer](#12-limitaciones-que-debes-conocer)
+13. [Resultados del modelo final (v7)](#13-resultados-del-modelo-final-v7)
 
 ---
 
@@ -27,11 +28,13 @@ Esta guía explica **qué medimos, por qué, cómo se genera cada dato, qué par
 1. Tenemos **6 microservicios** (una boletería) que se llaman entre sí.
 2. Les mandamos **tráfico simulado** (Locust) y, a propósito, **les provocamos cuellos de botella** (inyector) en momentos conocidos.
 3. Un **recolector** mide cada servicio cada segundo (CPU, RAM, latencia, peticiones por segundo, cola, errores) y guarda todo en CSV.
-4. Un script de **etiquetado** decide, mirando la latencia, en qué instantes cada servicio estaba en cuello de botella, y marca los **30 segundos anteriores** como "se viene un cuello de botella".
+4. Un script de **etiquetado** decide, mirando la latencia, en qué instantes cada servicio estaba en cuello de botella **por su propio trabajo** (no por esperar a otro servicio), y marca los **30 segundos anteriores** como "se viene un cuello de botella".
 5. Comparamos dos formas de predecirlo:
    - **Baseline:** una regla fija ("alarma si CPU > 80 %").
-   - **LSTM:** una red neuronal que mira los últimos 30 s de métricas y estima la probabilidad de que haya un cuello de botella en los próximos 30 s.
-6. Medimos con **Precision, Recall, F1 y Prediction Lead Time** (cuántos segundos antes avisamos).
+   - **LSTM:** una red neuronal que mira los últimos 30 s de métricas del servicio **y de los servicios a los que llama**, y estima la probabilidad de que haya un cuello de botella en los próximos 30 s.
+6. Medimos con **Precision, Recall, F1, falsas alarmas por hora y Prediction Lead Time** (cuántos segundos antes avisamos, contado de forma honesta).
+
+**Resultado del modelo final (v7, 80 corridas):** F1 0,32 contra 0,11 de la regla de CPU; detecta el 77 % de las degradaciones graduales con ~8,5 s de anticipación (mediana). Detalle en la [sección 13](#13-resultados-del-modelo-final-v7).
 
 ```
 tráfico (Locust) ──► microservicios ──► recolector ──► CSV ──► etiquetado ──► baseline / LSTM ──► métricas
@@ -162,7 +165,7 @@ Mide cada **arista** origen → destino (por ejemplo `reservaciones → pago`).
 | `lat_mean_ms`, `lat_p95_ms` | ms | Latencia de esa llamada vista **desde el origen** (incluye red y espera) |
 | `err_ps` | err/s | Llamadas fallidas por segundo |
 
-Sirve para ver **dónde** se propaga un problema y, en P2, para modelos sobre grafos. En P1 el LSTM usa solo `metrics.csv`.
+Sirve para ver **dónde** se propaga un problema. En P1 se usa en el **etiquetado**: con ella se calcula el **tiempo propio** de cada servicio (latencia media menos lo que tardaron sus llamadas a otros), que distingue un cuello de botella real de un servicio que solo está esperando (sección 7). El LSTM no lee `edges.csv` directamente; ve el estado de sus dependencias a través de `metrics.csv` (sección 9.1).
 
 ### 4.3 `events.csv`: qué inyectamos y cuándo (verdad conocida)
 
@@ -208,9 +211,10 @@ En `data/<run_id>/`:
 | `events.csv` | Inyecciones reales (sección 4.3) |
 | `locust_*.csv` | Estadísticas de Locust: lo que vieron los usuarios simulados (peticiones, fallos, tiempos) |
 | `meta.json` | Parámetros usados: escenario, duración, usuarios, inyecciones |
-| `OK` | Marca de corrida completa (la campaña salta las que ya la tienen) |
+| `OK` | Marca de corrida completa y válida (la campaña salta las que ya la tienen) |
+| `CONTAMINADA` | Solo si la corrida no pasó el control de calidad (sección 6.4); no recibe `OK` y se repite |
 
-Y tras consolidar, en `data/`: `dataset_metrics.csv`, `dataset_edges.csv` y `resumen_corridas.csv` (una fila por corrida).
+Y tras consolidar, en `data/`: `dataset_metrics.csv`, `dataset_edges.csv`, `resumen_corridas.csv` (una fila por corrida) y `calidad_corridas.csv` (resultado del control de calidad de cada corrida).
 
 ---
 
@@ -271,12 +275,16 @@ Ejecuta todas las corridas en cadena. Entre una y otra **reinicia los contenedor
 | `--solo-consolidar` | no | No corre nada; solo une lo ya hecho |
 | `--sin-consolidar` | no | Corre pero no consolida al final |
 | `--sin-chequeo` | no | Omite la verificación previa |
+| `--repetir-contaminadas` | no | Quita la marca `OK` a las corridas que no pasan el control de calidad, para repetirlas |
+| `--aceptar-contaminadas` | no | Marca `OK` una corrida nueva aunque no pase el control de calidad |
+
+**Control de calidad.** Todo corre en una sola máquina, así que si la laptop está ocupada (otro programa, un entrenamiento, modo ahorro de energía) los servicios gastan más CPU por el mismo trabajo y la corrida queda contaminada. Al terminar cada corrida se mide la **CPU total del sistema por petición antes de la primera inyección**; si supera **1,5 ×** la de `normal_base`, la corrida no recibe `OK`, deja un archivo `CONTAMINADA` y se repite la próxima vez. Así se detectaron y repitieron 10 corridas grabadas con la máquina al doble de su costo normal. **No entrenes ni corras nada pesado mientras haya una campaña activa.**
 
 La **verificación previa** comprueba que los 6 servicios responden, que una reserva atraviesa toda la cadena y que los contenedores tienen el `common.py` nuevo (métricas de dependencias y cubetas finas). Así no se pierden horas con código viejo.
 
 Si interrumpes con Ctrl+C, consolida lo terminado; al reanudar, **salta** las corridas con marca `OK` y repite la incompleta.
 
-### 6.5 El plan de la campaña (`--reps 1` = 28 corridas, ≈ 3,3 h)
+### 6.5 El plan de la campaña (`--reps 1` = 40 corridas, ≈ 4,7 h; `--reps 2` = 80 corridas)
 
 | Grupo | Corridas | Escenario | Duración | Usuarios | Inyección |
 | --- | --- | --- | --- | --- | --- |
@@ -285,6 +293,7 @@ Si interrumpes con Ctrl+C, consolida lo terminado; al reanudar, **salta** las co
 | `burst_inj` | 6 (una por servicio) | burst | 360 s | 15 base, pico 70 | Gradual `s:95:75:150:30` y abrupta `s:215:75:150`, esquivando las ráfagas (que caen en 60–85, 180–205 y 300–325 s) |
 | `progresivo_base` | 2 | progresivo | 360 s | 5 → 60 → 5 | Ninguna (saturación natural de `reservaciones`) |
 | `var_inj` | 12 (6 leves + 6 fuertes) | normal | 360 s | leve 15 / fuerte 20 | Leve: `cpu_load` 90, rampa 40 s. Fuerte: `cpu_load` 250, rampa 20 s. Cada una con evento gradual (60 s) y abrupto (220 s) |
+| `suave_inj` | 12 (6 con carga 25 + 6 con carga 40) | normal | 360 s | 15 | Gradual `s:60:120:carga:90` (rampa de 90 s) y abrupta `s:230:90:carga`. Algunas no llegan a saturar: dan degradaciones lentas y negativos difíciles |
 
 Cada corrida con inyección contiene **dos eventos**: uno gradual (con rampa) y uno abrupto (salto). Por eso en los resultados aparecen las causas `inyeccion_gradual` e `inyeccion_abrupto`.
 
@@ -293,8 +302,9 @@ Cada corrida con inyección contiene **dos eventos**: uno gradual (con rampa) y 
 - `normal_base`, `progresivo_base`: ejemplos **sin inyección**, para que el modelo aprenda cómo es lo normal y no solo lo anómalo.
 - `normal_inj`, `burst_inj`: cuellos de botella provocados con tráfico estable y con ráfagas (más ruido).
 - `var_inj`: variedad de severidad, para no aprender un único patrón.
+- `suave_inj`: degradaciones lentas, las únicas realmente anticipables, y casos que no llegan a saturar.
 
-**Pendiente de la campaña ampliada:** `--reps 2` (56 corridas, ≈ 6,6 h), recolector nuevo con muestreo regular y un grupo de inyecciones **suaves** (`cpu_load` ≈ 25–40) que se degraden despacio y sean anticipables.
+Los datos actuales son la campaña con `--reps 2`: **80 corridas**, todas dentro del control de calidad, con 144 inyecciones (72 graduales y 72 abruptas).
 
 ---
 
@@ -307,6 +317,7 @@ Script: `ml/etiquetar.py`. Opera por servicio y por corrida.
 1. **Umbral de latencia por servicio** = `max(3 × mediana de lat_p95 en corridas normal_base, 150 ms)`.
    Resultado real: 150 ms para `eventos`, `notificaciones`, `usuarios`, `ticket` y `pago`; 292,5 ms para `reservaciones` (es más lento por naturaleza, porque orquesta).
 2. Un instante está **en cuello de botella** (`bn_ahora = 1`) si `lat_p95 > umbral` **o** el servicio no respondió a `/metrics` (`scrape_ok = 0`).
+   **Etiqueta de cuello de botella propio** (`--solo-propio`, la que usa el modelo final): en los servicios que llaman a otros (`reservaciones`, `pago`, `ticket`) se exige además que el **tiempo propio** supere `max(3 × su mediana en normal_base, 50 ms)`. El tiempo propio es la latencia media menos la suma de las llamadas a dependencias (de `edges.csv`). Si un servicio solo está lento porque espera a otro, se marca `afectado = 1` y **no** cuenta como cuello de botella.
 3. Se exige que dure **al menos 3 s seguidos** (`--sostenido`) para ignorar picos aislados.
 4. Los episodios separados por **menos de 5 s** se fusionan en uno (`--fusion`).
 5. Se ignoran los **primeros 10 s** de cada corrida (arranque, `--ignorar-inicio`).
@@ -323,12 +334,18 @@ Script: `ml/etiquetar.py`. Opera por servicio y por corrida.
 | `--ignorar-inicio` | 10 s | Segundos descartados al inicio |
 | `--seed` | 42 | Semilla del reparto entre entrenamiento y prueba |
 | `--sufijo` | vacío | Sufijo para guardar variantes sin pisar los archivos |
+| `--solo-propio` | no | Usa la etiqueta de cuello de botella propio (se guarda con `--sufijo _propio`) |
+| `--piso-propio-ms` | 50 | Tiempo propio mínimo para considerar que el servicio es el cuello de botella |
+
+**Por qué la etiqueta propia.** Con la etiqueta original, en los episodios de "propagación" solo el 1–2 % de la latencia de `reservaciones`, `pago` y `ticket` era trabajo propio (~8 ms, igual que en reposo): estaban esperando al servicio que de verdad se saturaba. 110 de 118 episodios de propagación eran heredados. Eso hacía que `reservaciones` tuviera la etiqueta positiva en un tercio de su tiempo tranquilo sin ninguna diferencia en sus métricas, y el modelo aprendía a alarmar casi siempre. Con la etiqueta propia, las falsas alarmas bajaron de 17,5 a 5 por hora.
 
 ### 7.3 Columnas de `dataset_etiquetado.csv` (las más importantes)
 
 | Columna | Significado |
 | --- | --- |
 | `bn_ahora` | 1 si en este instante ya hay cuello de botella |
+| `afectado` | 1 si el servicio está lento solo por esperar a una dependencia (con `--solo-propio`) |
+| `lat_propia_ms` | Tiempo propio: latencia media menos las llamadas a dependencias |
 | `ep_id`, `ep_causa` | Episodio al que pertenece y su causa |
 | `y_30s` | **Etiqueta objetivo:** 1 si habrá cuello de botella en los próximos 30 s |
 | `y_inicio_30s` | 1 si un episodio **nuevo empieza** en los próximos 30 s |
@@ -346,7 +363,7 @@ Script: `ml/etiquetar.py`. Opera por servicio y por corrida.
 | `propagacion` | El servicio se degrada porque lo hace otro del que depende (o que depende de él) |
 | `natural` | Aparece por carga de tráfico (ráfagas o saturación) sin inyección en ese servicio |
 
-En esta campaña: 148 episodios = 25 graduales + 24 abruptos + 76 de propagación + 23 naturales.
+Con las 80 corridas y la etiqueta propia hay **195 episodios** = 65 graduales + 64 abruptos + 44 naturales + 22 de propagación (con la etiqueta original eran 397, la mayoría de propagación). Los naturales son todos de `reservaciones`: picos de `burst_inj` y saturación en `progresivo_base`.
 
 ### 7.5 Vistas de evaluación
 
@@ -372,12 +389,13 @@ boleteria_nube/
 │   ├── etiquetar.py                ← pone etiquetas y episodios
 │   ├── datos.py                    ← carga, ventanas y funciones de métricas
 │   ├── baseline.py                 ← umbral CPU>80 % y persistencia
-│   └── entrenar.py                 ← LSTM con validación cruzada
-└── data/
+│   ├── entrenar.py                 ← LSTM con validación cruzada
+│   └── postproceso.py              ← suavizado e híbrido de alarmas, sin reentrenar
+└── data/                           ← (no se sube a git: se regenera con los scripts)
     ├── <run_id>/                   ← una carpeta por corrida
-    ├── dataset_metrics.csv, dataset_edges.csv, resumen_corridas.csv
-    ├── dataset_etiquetado.csv, episodios.csv, umbrales.json
-    └── resultados/                 ← tablas, gráficas y modelo entrenado
+    ├── dataset_metrics.csv, dataset_edges.csv, resumen_corridas.csv, calidad_corridas.csv
+    ├── dataset_etiquetado[_propio].csv, episodios[_propio].csv, umbrales[_propio].json
+    └── resultados_v7/              ← tablas, gráficas y modelo final (lstm_final.pt)
 ```
 
 Flujo de datos:
@@ -393,7 +411,7 @@ Flujo de datos:
                               baseline.py                              entrenar.py
                             (umbral, persistencia)                       (LSTM)
                                                                               │
-                                                                data/resultados/*.csv, *.png
+                                                       data/<salida>/*.csv, *.png ──► postproceso.py
 ```
 
 ---
@@ -402,13 +420,17 @@ Flujo de datos:
 
 ### 9.1 Qué entra al modelo
 
-Para cada servicio y cada segundo *t*, el modelo ve una **ventana de 30 s** (de *t-29* a *t*). Cada segundo es un vector de **14 valores**:
+Para cada servicio y cada segundo *t*, el modelo ve una **ventana de 30 s** (de *t-29* a *t*). En el modelo final (v7, con `--contexto --tendencias`) cada segundo es un vector de **27 valores**:
 
 | Parte | Cantidad | Detalle |
 | --- | --- | --- |
-| Métricas | 7 | `cpu, ram_mb, rps, lat_mean_ms, lat_p95_ms, cola, err_rps` (estandarizadas con la media y desviación del entrenamiento) |
+| Métricas propias | 7 | `cpu, ram_mb, rps, lat_mean_ms, lat_p95_ms, cola, err_rps` (las de cola larga en log1p; estandarizadas con la media y desviación del entrenamiento) |
+| Contexto de dependencias | 3 | `cpu_dep, cola_dep, lat_p95_dep`: el máximo entre los servicios a los que llama, directa o indirectamente (0 en los servicios hoja). Así `pago` ve venir la saturación de `ticket` o `notificaciones` |
+| Tendencias | 10 | `d5_*` y `d15_*`: cuánto cambiaron en 5 y 15 s `cpu`, `cola`, `rps`, `lat_p95_ms` y `cpu_dep` |
 | Dato faltante | 1 | 1 si ese segundo no tenía medición |
 | Servicio | 6 | One-hot del servicio (cuál de los 6) |
+
+Sin `--contexto --tendencias` el modelo usa solo 14 valores (las 7 métricas, el dato faltante y el servicio). Las entradas nuevas duplicaron los episodios avisados con 15 s o más de anticipación (de 11 % a 25 %).
 
 Salida: **una probabilidad** (0 a 1) de que haya cuello de botella en los próximos 30 s.
 
@@ -417,7 +439,7 @@ Salida: **una probabilidad** (0 a 1) de que haya cuello de botella en los próxi
 Una red neuronal para **series de tiempo**. Lee la ventana segundo a segundo y mantiene una "memoria" interna que decide qué recordar y qué olvidar. Al final del segundo 30 resume lo visto, y una capa lineal convierte ese resumen en la probabilidad. Así puede captar **tendencias** (la cola sube, la latencia se acelera) que un umbral instantáneo no ve.
 
 ```
-ventana 30 s × 14 valores ─► LSTM (1 capa, 64 unidades) ─► último paso ─► capa lineal ─► sigmoide ─► P(cuello de botella en 30 s)
+ventana 30 s × 27 valores ─► LSTM (1 capa, 64 unidades) ─► último paso ─► capa lineal ─► sigmoide ─► P(cuello de botella en 30 s)
 ```
 
 ### 9.3 Hiperparámetros (`ml/entrenar.py`)
@@ -433,13 +455,23 @@ ventana 30 s × 14 valores ─► LSTM (1 capa, 64 unidades) ─► último paso
 | `--seed` | 42 | Semilla |
 | `--cpu` | 80 | Umbral del baseline de CPU |
 | `--sin-final` | no | No entrena el modelo final (más rápido) |
+| `--sufijo` | vacío | Qué etiquetado usar (`_propio` = cuello de botella propio) |
+| `--contexto` | no | Añade las métricas de las dependencias (`*_dep`) |
+| `--tendencias` | no | Añade los cambios en 5 y 15 s (`d5_*`, `d15_*`) |
+| `--criterio` | `fbeta` | Métrica que maximiza el umbral en validación (`fbeta` o `f1`) |
+| `--beta` | 0,5 | β de F-beta (< 1 favorece la precisión) |
+| `--fpr-max` | ninguno | Solo umbrales con tasa de falsas alarmas ≤ este valor |
+| `--objetivo` | `y_30s` | `y_inicio_30s` entrena solo en segundos sin cuello de botella (se probó; no ayudó) |
+| `--sin-latencia` | no | Quita las entradas de latencia (prueba de que el modelo no solo lee la etiqueta) |
+| `--excluir-contaminadas` | no | Deja fuera las corridas marcadas en `calidad_corridas.csv` |
+| `--salida` | `resultados` | Subcarpeta de `data/` donde guardar los resultados |
 
 Pérdida: entropía cruzada binaria con `pos_weight`, porque los instantes "peligrosos" son pocos frente a los normales.
 
 ### 9.4 Cómo se evita hacer trampa (protocolo)
 
 - **Validación cruzada agrupada por corrida:** ninguna corrida aparece a la vez en entrenamiento y prueba. Si no, el modelo memorizaría la corrida.
-- Dentro de cada fold, ~15 % de las corridas de entrenamiento se usan como **validación** para decidir cuándo parar y **qué umbral de decisión** usar (el que maximiza F1 en vista B, probando de 0,05 a 0,95).
+- Dentro de cada fold, ~15 % de las corridas de entrenamiento se usan como **validación** para decidir cuándo parar y **qué umbral de decisión** usar (el que maximiza **F0,5** en vista B, probando de 0,05 a 0,95; F0,5 pesa más la precisión y reduce las falsas alarmas. Elegirlo por F1 dio umbrales inestables).
 - La **normalización** se calcula solo con datos de entrenamiento.
 - Se reúnen las predicciones de los 4 folds y se evalúa todo junto, además de por fold.
 - Al final se entrena un **modelo final** con todas las corridas (`models/lstm_final.pt`), con el umbral = mediana de los umbrales de los folds.
@@ -452,7 +484,7 @@ Pérdida: entropía cruzada binaria con `pos_weight`, porque los instantes "peli
 | **Persistencia** | Alarma si ya hay cuello de botella ahora | Referencia mínima: la etiqueta deriva de la latencia, que también es entrada del modelo. En vista B vale 0 por construcción |
 | **LSTM** | Alarma si P ≥ umbral elegido en validación | La primera versión de IA |
 
-### 9.6 Archivos que produce `entrenar.py` (en `data/resultados/`)
+### 9.6 Archivos que produce `entrenar.py` (en `data/<--salida>/`; el modelo final está en `data/resultados_v7/`)
 
 | Archivo | Contenido |
 | --- | --- |
@@ -463,7 +495,8 @@ Pérdida: entropía cruzada binaria con `pos_weight`, porque los instantes "peli
 | `predicciones.csv` | Probabilidades por servicio y segundo |
 | `config.json` | Configuración usada |
 | `comparacion.png`, `ejemplo_timeline.png` | Gráficas de comparación y un ejemplo temporal |
-| `models/lstm_final.pt` | Modelo final |
+| `models/lstm_final.pt` | Modelo final (pesos, normalización, umbral y columnas usadas) |
+| `postproceso.csv` | Lo genera `postproceso.py`: métricas con suavizado de la alarma y del híbrido LSTM o CPU |
 
 ---
 
@@ -483,12 +516,18 @@ Se cuenta cada **servicio-segundo** como una decisión: "¿alarmo o no?".
 | **Precision** | TP / (TP + FP) | De las alarmas que doy, qué fracción es real. Baja = muchas falsas alarmas |
 | **Recall** | TP / (TP + FN) | De los cuellos de botella que venían, qué fracción detecté |
 | **F1** | 2·P·R / (P + R) | Equilibrio entre ambas |
+| **F0,5** | F-beta con β = 0,5 | Como F1, pero pesa más la precision; con ella se elige el umbral |
 | **fpr** | FP / (FP + TN) | Fracción de instantes normales en que alarmé |
-| **Prediction Lead Time** | segundos entre la **primera alarma** y el **inicio del episodio** (máximo 30 s) | Cuánto margen tiene un operador para reaccionar |
+| **Falsas alarmas por hora** | encendidos de alarma sin cuello de botella en los 30 s siguientes / horas de servicio | Cuántas veces molestaría a un operador; cuenta encendidos, no segundos |
+| **Prediction Lead Time** | segundos entre el **encendido de la alarma** y el **inicio del episodio** (máximo 30 s) | Cuánto margen tiene un operador para reaccionar |
 
-**Cómo se calcula el lead time aquí:** para cada episodio se mira la ventana de hasta 30 s **anterior** a su inicio en que el servicio estaba libre. Si hubo una alarma, el lead es el tiempo desde la primera alarma hasta el inicio. Se excluyen episodios con menos de 3 s libres antes.
+**Lead time honesto (el que se reporta):** para cada episodio se mira la ventana de hasta 30 s **anterior** a su inicio en que el servicio estaba libre. Solo cuenta una alarma que **se enciende** dentro de esa ventana **después de estar ≥ 5 s apagada**; el lead es el tiempo desde ese encendido hasta el inicio. Una alarma que ya estaba encendida no suma anticipación. Se excluyen episodios con menos de 3 s libres antes. Las columnas `*_bruto` guardan el cálculo anterior (cualquier segundo con alarma) solo para comparar.
 
-**Trampa a evitar:** una alarma encendida *siempre* da lead de 30 s y recall alto, pero con precision baja. Por eso **el lead time nunca se reporta solo**: siempre junto a precision y fpr.
+**Trampa a evitar:** una alarma encendida *siempre* daba un lead de 30 s con el cálculo bruto. Así se vio en la primera versión: en propagación, 66 de 72 detecciones tenían la alarma encendida toda la ventana. Por eso el lead se cuenta de forma honesta y **nunca se reporta solo**: siempre junto a precision y falsas alarmas por hora.
+
+**Nivel del azar:** con *F* falsas alarmas por hora, una ventana de 30 s recibe una alarma casual con probabilidad ≈ *F* × 30 / 3600. Con 9 por hora (v7) es ≈ 8 %. Una tasa de detección cercana a ese valor no es anticipación.
+
+**Post-proceso (`ml/postproceso.py`):** sin reentrenar, mide el efecto de **suavizar** la alarma (que suene solo si el modelo dijo "sí" en 3 de los últimos 5 s) y del **híbrido** "LSTM o CPU > 80 %". El suavizado reduce las falsas alarmas a la mitad pero retrasa el aviso; el híbrido no aporta.
 
 ---
 
@@ -506,21 +545,23 @@ python run_campaign.py --dry-run
 # 2. Prueba corta de un grupo
 python run_campaign.py --only normal_base
 
-# 3. Campaña completa + consolidar
-python run_campaign.py            # o: --reps 2 para la versión ampliada
+# 3. Campaña completa + consolidar (80 corridas, ≈ 9,5 h; se puede cortar con Ctrl+C y reanudar)
+python run_campaign.py --reps 2
+python run_campaign.py --reps 2 --repetir-contaminadas   # si alguna no pasó el control de calidad
 
 # 4. (opcional) Ver una corrida
 python ml/graficar_corrida.py data/<run_id> --smooth 3
 
-# 5. Etiquetar
+# 5. Etiquetar (original y de cuello de botella propio)
 python ml/etiquetar.py
+python ml/etiquetar.py --solo-propio --sufijo _propio
 
 # 6. Baseline
-python ml/baseline.py
+python ml/baseline.py --sufijo _propio
 
-# 7. LSTM (prueba rápida y luego completo)
-python ml/entrenar.py --epocas 3 --sin-final
-python ml/entrenar.py
+# 7. Modelo final v7 (unos minutos con la máquina libre) y post-proceso
+python ml/entrenar.py --sufijo _propio --contexto --tendencias --salida resultados_v7
+python ml/postproceso.py --sufijo _propio --resultados resultados_v7
 ```
 
 Para una variante de etiquetado más permisiva, sin pisar los archivos: `python ml/etiquetar.py --piso-ms 50 --sufijo _piso50` y luego `--sufijo _piso50` en `baseline.py` y `entrenar.py`.
@@ -529,11 +570,45 @@ Para una variante de etiquetado más permisiva, sin pisar los archivos: `python 
 
 ## 12. Limitaciones que debes conocer
 
-- **Toda inyección satura**, incluso la "leve": faltan degradaciones lentas y suaves (más anticipables).
-- **La etiqueta sale de la latencia**, que además es una entrada del modelo; por eso existe la persistencia como referencia.
-- **Lo abrupto no se puede anticipar:** sin señal previa en las métricas, ningún modelo puede avisar a tiempo.
-- **Conjunto de prueba pequeño** (decenas de episodios por tipo; solo 2 corridas de `progresivo_base`).
-- **Todo corre en una sola máquina:** hay ruido por contención y, bajo saturación fuerte, el `/metrics` a veces no responde (`scrape_ok = 0`).
-- **Muestreo irregular** en las corridas de la primera campaña; el p95 es aproximado (cubetas de histograma).
-- **Tráfico simulado y simple:** todas las peticiones usan el mismo usuario.
-- **Resultados actuales (resumen):** el LSTM supera al umbral CPU>80 % en recall y F1 (≈ 0,71 y 0,40 contra 0,02 y 0,04), con precision baja (≈ 0,29) y anticipación real de unos 2–11 s en inyecciones graduales; el umbral gana en `progresivo_base` (solo 2 corridas).
+- **No se alcanzan los 30 s de anticipación:** las métricas solo empiezan a moverse unos segundos antes del problema. La mediana real es ~8,5 s en fallos graduales.
+- **Lo abrupto no se puede anticipar:** sin señal previa en las métricas, ningún modelo puede avisar a tiempo. Una vez iniciado, tanto el LSTM como la regla de CPU lo detectan en ~1 s.
+- **La etiqueta sale de la latencia**, que además es una entrada del modelo. Sin las entradas de latencia el LSTM conserva ~85 % de su F1, así que no se limita a leer la etiqueta.
+- **Pocos episodios en algunos escenarios:** `progresivo_base` tiene solo 4 corridas (8 episodios).
+- **Todo corre en una sola máquina:** hay ruido por contención (de ahí el control de calidad) y, bajo saturación fuerte, el `/metrics` a veces no responde (`scrape_ok = 0`).
+- **El p95 es aproximado** (cubetas de histograma).
+- **Tráfico simulado y simple:** todas las peticiones usan el mismo usuario (no genera contención: ningún servicio bloquea por usuario).
+- **Decisiones de diseño sin análisis de sensibilidad completo:** el factor 3 × la mediana y los pisos de 150 ms y 50 ms.
+
+---
+
+## 13. Resultados del modelo final (v7)
+
+**Modelo:** LSTM con contexto de dependencias y tendencias, etiqueta de cuello de botella propio, 80 corridas, validación cruzada de 4 folds por corrida. Archivo: `data/resultados_v7/models/lstm_final.pt` (umbral 0,83).
+
+### 13.1 Vista B (todas las corridas)
+
+| Método | Precision | Recall | F1 | Falsas alarmas/h | Graduales detectados (mediana) | Episodios con ≥ 15 s |
+| --- | --- | --- | --- | --- | --- | --- |
+| **LSTM v7** | 0,42 | **0,26** | **0,32** (± 0,04 por fold) | 9,0 | **77 % (8,5 s)** | 13 % |
+| CPU > 80 % | 0,47 | 0,06 | 0,11 | 2,8 | 38 % (4 s) | 4 % |
+
+### 13.2 Por escenario de carga
+
+| Escenario | Corridas | Episodios | F1 LSTM / CPU | Falsas alarmas/h LSTM / CPU | Avisados antes de empezar LSTM / CPU | Anticipación mediana LSTM / CPU |
+| --- | --- | --- | --- | --- | --- | --- |
+| Carga normal (con fallos inyectados) | 64 | 125 | **0,25** / 0,09 | 9,3 / 2,4 | **44 %** / 22 % | **10 s** / 5 s |
+| Crecimiento progresivo | 4 | 8 | 0,53 / 0,57 | **4,3** / 17,5 | **50 %** / 0 % | **22 s** / — |
+| Burst de solicitudes | 12 | 62 | **0,43** / 0,02 | 9,4 / 0 | **39 %** / 8 % | **8,5 s** / 2 s |
+
+### 13.3 Cómo se llegó aquí
+
+| Versión | Qué cambió | F1 | Falsas alarmas/h | Lección |
+| --- | --- | --- | --- | --- |
+| v1 | Primer modelo (28 corridas) | 0,40 | — | Su lead de 30 s era una ilusión: la alarma estaba casi siempre encendida |
+| v2 | Lead honesto, umbral por F0,5, 40 corridas | 0,46 | 20,8 | Anticipación real de ~6,5 s |
+| v3 / v4 | Contexto de dependencias + tendencias | 0,44 / 0,49 | 20,7 / 17,5 | Duplicó los avisos con ≥ 15 s (de 11 % a 25 %) |
+| v5 | Etiqueta de cuello de botella propio | 0,33* | 5,0 | Muchos "cuellos de botella" eran servicios esperando a otro |
+| v6 | 10 corridas contaminadas repetidas en limpio | 0,26* | 8,4 | v5 estaba inflado por la máquina lenta |
+| **v7** | **80 corridas (2 repeticiones)** | **0,32*** | 9,0 | Más datos: +0,06 de F1 sin más falsas alarmas |
+
+\* Desde v5 cambia la etiqueta, así que su F1 no se compara directamente con el de v1–v4. La configuración de v4 con 80 corridas y la etiqueta original llega a F1 0,50, pero esa etiqueta cuenta como cuello de botella la lentitud heredada.
