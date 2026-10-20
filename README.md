@@ -19,7 +19,7 @@ Esta guía explica **qué medimos, por qué, cómo se genera cada dato, qué par
 10. [Métricas de evaluación](#10-métricas-de-evaluación)
 11. [Comandos en orden](#11-comandos-en-orden)
 12. [Limitaciones que debes conocer](#12-limitaciones-que-debes-conocer)
-13. [Resultados del modelo final (v7)](#13-resultados-del-modelo-final-v7)
+13. [Resultados del modelo final (v8)](#13-resultados-del-modelo-final-v8)
 14. [Demo](#14-demo)
 
 ---
@@ -35,7 +35,7 @@ Esta guía explica **qué medimos, por qué, cómo se genera cada dato, qué par
    - **LSTM:** una red neuronal que mira los últimos 30 s de métricas del servicio **y de los servicios a los que llama**, y estima la probabilidad de que haya un cuello de botella en los próximos 30 s.
 6. Medimos con **Precision, Recall, F1, falsas alarmas por hora y Prediction Lead Time** (cuántos segundos antes avisamos, contado de forma honesta).
 
-**Resultado del modelo final (v7, 80 corridas):** F1 0,32 contra 0,11 de la regla de CPU; detecta el 77 % de las degradaciones graduales con ~8,5 s de anticipación (mediana). Detalle en la [sección 13](#13-resultados-del-modelo-final-v7).
+**Resultado del modelo final (v8, ensamble de 3 LSTM, 80 corridas):** F1 0,36 contra 0,11 de la regla de CPU, con precisión 0,72 y 2,3 falsas alarmas por hora de servicio (menos que la propia regla de CPU); detecta el 85 % de las degradaciones graduales con ~9 s de anticipación (mediana). Verificado en vivo con 6 corridas nuevas. Detalle en la [sección 13](#13-resultados-del-modelo-final-v8).
 
 ```
 tráfico (Locust) ──► microservicios ──► recolector ──► CSV ──► etiquetado ──► baseline / LSTM ──► métricas
@@ -391,12 +391,20 @@ boleteria_nube/
 │   ├── datos.py                    ← carga, ventanas y funciones de métricas
 │   ├── baseline.py                 ← umbral CPU>80 % y persistencia
 │   ├── entrenar.py                 ← LSTM con validación cruzada
-│   └── postproceso.py              ← suavizado e híbrido de alarmas, sin reentrenar
+│   ├── postproceso.py              ← suavizado e híbrido de alarmas, sin reentrenar
+│   ├── por_escenario.py            ← métricas por escenario de carga (normal / progresivo / burst)
+│   ├── barrido.py                  ← barrido de hiperparámetros y balanceo (varias semillas)
+│   ├── ensamble.py                 ← ensamble de semillas: evalúa y arma el modelo final v8
+│   ├── demo.py                     ← demo en vivo y en modo repetición
+│   └── verificar_vivo.py           ← corridas nuevas en vivo + evaluación con el mismo protocolo
 └── data/                           ← (no se sube a git: se regenera con los scripts)
     ├── <run_id>/                   ← una carpeta por corrida
     ├── dataset_metrics.csv, dataset_edges.csv, resumen_corridas.csv, calidad_corridas.csv
     ├── dataset_etiquetado[_propio].csv, episodios[_propio].csv, umbrales[_propio].json
-    └── resultados_v7/              ← tablas, gráficas y modelo final (lstm_final.pt)
+    ├── resultados_v8/              ← modelo final: s1, s2, s3 + modelo_ensamble.json + predicciones
+    ├── resultados_v7/              ← modelo anterior (un solo LSTM)
+    ├── barrido/                    ← 40 entrenamientos del barrido y su resumen
+    └── vivo/                       ← corridas de la verificación en vivo
 ```
 
 Flujo de datos:
@@ -421,7 +429,7 @@ Flujo de datos:
 
 ### 9.1 Qué entra al modelo
 
-Para cada servicio y cada segundo *t*, el modelo ve una **ventana de 30 s** (de *t-29* a *t*). En el modelo final (v7, con `--contexto --tendencias`) cada segundo es un vector de **27 valores**:
+Para cada servicio y cada segundo *t*, el modelo ve una **ventana de 30 s** (de *t-29* a *t*). En el modelo final (cada uno de los 3 LSTM de v8, igual que v7, con `--contexto --tendencias`) cada segundo es un vector de **27 valores**:
 
 | Parte | Cantidad | Detalle |
 | --- | --- | --- |
@@ -466,6 +474,12 @@ ventana 30 s × 27 valores ─► LSTM (1 capa, 64 unidades) ─► último paso
 | `--sin-latencia` | no | Quita las entradas de latencia (prueba de que el modelo no solo lee la etiqueta) |
 | `--excluir-contaminadas` | no | Deja fuera las corridas marcadas en `calidad_corridas.csv` |
 | `--salida` | `resultados` | Subcarpeta de `data/` donde guardar los resultados |
+| `--seed-folds` | = `--seed` | Semilla del reparto en folds. Fijarla (42) permite comparar variantes con las mismas corridas de prueba |
+| `--balanceo` | `pos_weight` | `ninguno` o `submuestreo` (todos los positivos + `--ratio` negativos por positivo en cada época) |
+| `--parada` | `loss` | Métrica de la parada temprana: `loss` (BCE), `loss_pond` (BCE ponderada) o `ap` (average precision) |
+| `--capas`, `--dropout`, `--wd`, `--ventana` | 1, 0, 0, 30 | Capas del LSTM, dropout, weight decay y segundos de historia |
+
+**Qué se aprendió con el barrido** (`ml/barrido.py`, 13 variantes × 3 semillas, mismos folds): ninguna variante de balanceo, parada temprana, tamaño, capas, lr, weight decay o lote mejoró a la configuración de v7 por más que la variación entre semillas (±0,02 de F1). La **ventana de 60 s** subió el F1 a 0,56, pero al compararla sobre los mismos segundos y por causa se vio que la mejora venía de **memorizar el calendario del experimento**: "avisaba" el 58 % de los fallos abruptos con 21 s de anticipación (imposible: no tienen señal previa) porque veía el final del fallo gradual, y anticipaba los picos de burst, que caen siempre cada 120 s. Se descartó. Lo que sí sirvió fue el **ensamble de semillas** (sección 13).
 
 Pérdida: entropía cruzada binaria con `pos_weight`, porque los instantes "peligrosos" son pocos frente a los normales.
 
@@ -485,7 +499,7 @@ Pérdida: entropía cruzada binaria con `pos_weight`, porque los instantes "peli
 | **Persistencia** | Alarma si ya hay cuello de botella ahora | Referencia mínima: la etiqueta deriva de la latencia, que también es entrada del modelo. En vista B vale 0 por construcción |
 | **LSTM** | Alarma si P ≥ umbral elegido en validación | La primera versión de IA |
 
-### 9.6 Archivos que produce `entrenar.py` (en `data/<--salida>/`; el modelo final está en `data/resultados_v7/`)
+### 9.6 Archivos que produce `entrenar.py` (en `data/<--salida>/`; el modelo final está en `data/resultados_v8/`)
 
 | Archivo | Contenido |
 | --- | --- |
@@ -526,7 +540,11 @@ Se cuenta cada **servicio-segundo** como una decisión: "¿alarmo o no?".
 
 **Trampa a evitar:** una alarma encendida *siempre* daba un lead de 30 s con el cálculo bruto. Así se vio en la primera versión: en propagación, 66 de 72 detecciones tenían la alarma encendida toda la ventana. Por eso el lead se cuenta de forma honesta y **nunca se reporta solo**: siempre junto a precision y falsas alarmas por hora.
 
-**Nivel del azar:** con *F* falsas alarmas por hora, una ventana de 30 s recibe una alarma casual con probabilidad ≈ *F* × 30 / 3600. Con 9 por hora (v7) es ≈ 8 %. Una tasa de detección cercana a ese valor no es anticipación.
+**Nivel del azar:** con *F* falsas alarmas por hora, una ventana de 30 s recibe una alarma casual con probabilidad ≈ *F* × 30 / 3600. Con 2,3 por hora (v8) es ≈ 2 %; con 9 por hora (v7) era ≈ 8 %. Una tasa de detección cercana a ese valor no es anticipación.
+
+**Falsas alarmas: por servicio y por sistema.** La cifra de las tablas es **por hora de servicio**. La demo muestra los 6 servicios a la vez, así que en pantalla se ven **6 veces más**: con v8, ~14 por hora en todo el sistema (una cada ~4 min); con v7 eran ~54 (casi una por minuto).
+
+**Precisión por segundo y por alarma.** La precisión de las tablas cuenta segundos con alarma. Contando cada encendido de la alarma, la de v7 bajaba de 0,42 a 0,29, porque sus alarmas falsas eran parpadeos cortos y las correctas, largas. Con v8 es **0,52 por alarma** (86 de 166 encendidos): más de la mitad de las veces que suena, viene un problema real. Es lo que percibe un operador.
 
 **Post-proceso (`ml/postproceso.py`):** sin reentrenar, mide el efecto de **suavizar** la alarma (que suene solo si el modelo dijo "sí" en 3 de los últimos 5 s) y del **híbrido** "LSTM o CPU > 80 %". El suavizado reduce las falsas alarmas a la mitad pero retrasa el aviso; el híbrido no aporta.
 
@@ -560,10 +578,25 @@ python ml/etiquetar.py --solo-propio --sufijo _propio
 # 6. Baseline
 python ml/baseline.py --sufijo _propio
 
-# 7. Modelo final v7 (unos minutos con la máquina libre) y post-proceso
-python ml/entrenar.py --sufijo _propio --contexto --tendencias --salida resultados_v7
-python ml/postproceso.py --sufijo _propio --resultados resultados_v7
+# 7. Modelo final v8: 3 LSTM con la configuración de v7 y distinta semilla (mismos folds), y su ensamble
+python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 1 --salida resultados_v8/s1
+python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 2 --salida resultados_v8/s2
+python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 3 --salida resultados_v8/s3
+python ml/ensamble.py --dirs resultados_v8/s1 resultados_v8/s2 resultados_v8/s3 --salida resultados_v8
+
+# 8. Tablas del modelo final: post-proceso y por escenario de carga
+python ml/postproceso.py --sufijo _propio --resultados resultados_v8
+python ml/por_escenario.py --resultados resultados_v8
+
+# 9. (opcional) Barrido de hiperparámetros, ~4 h con la máquina libre
+python ml/barrido.py
+
+# 10. (opcional) Verificación en vivo: 6 corridas nuevas (~45 min, Docker arriba) y su evaluación
+python ml/verificar_vivo.py correr
+python ml/verificar_vivo.py evaluar --modelo data/resultados_v8/modelo_ensamble.json --resultados resultados_v8
 ```
+
+Cada entrenamiento tarda ~5–7 min con la máquina libre. **No entrenes mientras corre una campaña** (contamina las mediciones).
 
 Para una variante de etiquetado más permisiva, sin pisar los archivos: `python ml/etiquetar.py --piso-ms 50 --sufijo _piso50` y luego `--sufijo _piso50` en `baseline.py` y `entrenar.py`.
 
@@ -571,8 +604,10 @@ Para una variante de etiquetado más permisiva, sin pisar los archivos: `python 
 
 ## 12. Limitaciones que debes conocer
 
-- **No se alcanzan los 30 s de anticipación:** las métricas solo empiezan a moverse unos segundos antes del problema. La mediana real es ~8,5 s en fallos graduales.
+- **No se alcanzan los 30 s de anticipación:** las métricas solo empiezan a moverse unos segundos antes del problema. La mediana real es ~9 s en fallos graduales. En el crecimiento progresivo el modelo sí llega a avisar con más de 30 s, pero la métrica estricta no lo cuenta (solo cuenta encendidos dentro de los 30 s previos).
 - **Lo abrupto no se puede anticipar:** sin señal previa en las métricas, ningún modelo puede avisar a tiempo. Una vez iniciado, tanto el LSTM como la regla de CPU lo detectan en ~1 s.
+- **El modelo aprende parte del calendario del experimento:** en todas las corridas el fallo abrupto llega ~45 s después del gradual en el mismo servicio, y los picos de burst caen siempre cada 120 s. Algunos "aciertos" en abruptos y picos vienen de ese patrón, no de las métricas. Lo correcto sería variar el orden y los tiempos de las inyecciones y de los picos en una próxima campaña.
+- **Falsas alarmas:** 2,3 por hora **por servicio** con v8, que en el sistema completo (6 servicios) son ~14 por hora. Bajaron mucho respecto a v7 (~54 por hora en el sistema), pero siguen siendo la principal debilidad para un uso real.
 - **La etiqueta sale de la latencia**, que además es una entrada del modelo. Sin las entradas de latencia el LSTM conserva ~85 % de su F1, así que no se limita a leer la etiqueta.
 - **Pocos episodios en algunos escenarios:** `progresivo_base` tiene solo 4 corridas (8 episodios).
 - **Todo corre en una sola máquina:** hay ruido por contención (de ahí el control de calidad) y, bajo saturación fuerte, el `/metrics` a veces no responde (`scrape_ok = 0`).
@@ -582,26 +617,46 @@ Para una variante de etiquetado más permisiva, sin pisar los archivos: `python 
 
 ---
 
-## 13. Resultados del modelo final (v7)
+## 13. Resultados del modelo final (v8)
 
-**Modelo:** LSTM con contexto de dependencias y tendencias, etiqueta de cuello de botella propio, 80 corridas, validación cruzada de 4 folds por corrida. Archivo: `data/resultados_v7/models/lstm_final.pt` (umbral 0,83).
+**Modelo v8:** un **ensamble de 3 LSTM** con la configuración de v7 (contexto de dependencias, tendencias, etiqueta de cuello de botella propio, 80 corridas) entrenados con las semillas 1, 2 y 3. La probabilidad es el **promedio de los tres** y la alarma suena si supera **0,91** (mediana de los umbrales por fold del ensamble). Archivo: `data/resultados_v8/modelo_ensamble.json`, que apunta a `s1`, `s2` y `s3/models/lstm_final.pt`.
 
-### 13.1 Vista B (todas las corridas)
+**Por qué un ensamble.** v7 es 100 % reproducible (con la semilla 42 da exactamente lo mismo), pero tuvo mala suerte: en el fold 4 la validación eligió un umbral de 0,55 (en los demás, 0,80–0,95) y eso disparó sus falsas alarmas. Con la misma configuración y otras semillas salen 3,5–4,3 falsas alarmas por hora en vez de 9. Promediar 3 modelos reduce esa variación y cancela los parpadeos sueltos de cada uno.
 
-| Método | Precision | Recall | F1 | Falsas alarmas/h | Graduales detectados (mediana) | Episodios con ≥ 15 s |
+### 13.1 Vista B, validación cruzada (80 corridas)
+
+| Método | Precisión | Recall | F1 | Falsas alarmas/h (por servicio) | Precisión por alarma | Graduales avisados (mediana) | Episodios con ≥ 15 s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **v8 (ensamble)** | **0,72** | 0,24 | **0,36** | **2,3** | **0,52** | **85 % (9 s)** | 13 % |
+| v7 (un LSTM, semilla 42) | 0,42 | 0,26 | 0,32 | 9,0 | 0,29 | 77 % (8,5 s) | 13 % |
+| Cada semilla sola (1, 2, 3) | 0,60–0,68 | 0,25 | 0,35–0,37 | 3,5–4,3 | — | 80–85 % | 11–15 % |
+| CPU > 80 % | 0,47 | 0,06 | 0,11 | 2,8 | 0,41 | 38 % (4 s) | 4 % |
+
+### 13.2 Por escenario de carga (validación cruzada)
+
+| Escenario | Corridas | Episodios | F1 v8 / CPU | Falsas alarmas/h v8 / CPU | Avisados antes de empezar v8 / CPU | Anticipación mediana v8 / CPU |
 | --- | --- | --- | --- | --- | --- | --- |
-| **LSTM v7** | 0,42 | **0,26** | **0,32** (± 0,04 por fold) | 9,0 | **77 % (8,5 s)** | 13 % |
-| CPU > 80 % | 0,47 | 0,06 | 0,11 | 2,8 | 38 % (4 s) | 4 % |
+| Carga normal (con fallos inyectados) | 64 | 125 | **0,26** / 0,09 | **1,9** / 2,4 | **42 %** / 22 % | **9 s** / 5 s |
+| Crecimiento progresivo | 4 | 8 | **0,78** / 0,57 | **4,8** / 17,5 | **50 %** / 0 % | **25,5 s** / — |
+| Burst de solicitudes | 12 | 62 | **0,49** / 0,02 | 3,8 / 0 | **34 %** / 8 % | **7 s** / 2 s |
 
-### 13.2 Por escenario de carga
+Con v7 eran: normal 0,25 (9,3 falsas alarmas/h), progresivo 0,53 (4,3) y burst 0,43 (9,4). Se reproduce con `python ml/por_escenario.py --resultados resultados_v8`.
 
-| Escenario | Corridas | Episodios | F1 LSTM / CPU | Falsas alarmas/h LSTM / CPU | Avisados antes de empezar LSTM / CPU | Anticipación mediana LSTM / CPU |
-| --- | --- | --- | --- | --- | --- | --- |
-| Carga normal (con fallos inyectados) | 64 | 125 | **0,25** / 0,09 | 9,3 / 2,4 | **44 %** / 22 % | **10 s** / 5 s |
-| Crecimiento progresivo | 4 | 8 | 0,53 / 0,57 | **4,3** / 17,5 | **50 %** / 0 % | **22 s** / — |
-| Burst de solicitudes | 12 | 62 | **0,43** / 0,02 | 9,4 / 0 | **39 %** / 8 % | **8,5 s** / 2 s |
+### 13.3 Verificación en vivo (6 corridas nuevas que ningún modelo vio)
 
-### 13.3 Cómo se llegó aquí
+`ml/verificar_vivo.py` corrió 6 corridas nuevas (2 de carga normal con fallos en `ticket` y `eventos`, 2 de crecimiento progresivo y 2 de burst con fallos en `pago` y `notificaciones`), con la demo en vivo grabando, y las midió con el mismo protocolo. Se excluyó un tramo de 40 s en que la laptop se suspendió (5 episodios falsos).
+
+| Las 6 corridas juntas | Precisión | Recall | F1 | Falsas alarmas/h (servicio / sistema) | Graduales avisados (mediana) |
+| --- | --- | --- | --- | --- | --- |
+| **v8** | **0,77** | 0,28 | 0,41 | **3,7 / 22** | 4 de 4 (5,5 s) |
+| v7 | 0,66 | 0,37 | **0,47** | 8,9 / 54 | 4 de 4 (6,5 s) |
+| CPU > 80 % | 0,38 | 0,10 | 0,15 | 4,8 / 29 | 1 de 4 (1 s) |
+
+- En corridas nuevas se confirma lo de la validación cruzada: **v8 reduce las falsas alarmas a menos de la mitad** (menos que la regla de CPU) y sigue avisando todas las degradaciones graduales. A cambio es más conservador y su recall baja un poco.
+- En el crecimiento progresivo los modelos encendieron la alarma **34–38 s antes** de la saturación; la métrica estricta no lo cuenta porque empezó antes de la ventana de 30 s.
+- Algunos "avisos" de fallos abruptos (26–28 s) y de picos de burst (35–42 s) vienen del calendario fijo del experimento, no de las métricas.
+
+### 13.4 Cómo se llegó aquí
 
 | Versión | Qué cambió | F1 | Falsas alarmas/h | Lección |
 | --- | --- | --- | --- | --- |
@@ -610,7 +665,8 @@ Para una variante de etiquetado más permisiva, sin pisar los archivos: `python 
 | v3 / v4 | Contexto de dependencias + tendencias | 0,44 / 0,49 | 20,7 / 17,5 | Duplicó los avisos con ≥ 15 s (de 11 % a 25 %) |
 | v5 | Etiqueta de cuello de botella propio | 0,33* | 5,0 | Muchos "cuellos de botella" eran servicios esperando a otro |
 | v6 | 10 corridas contaminadas repetidas en limpio | 0,26* | 8,4 | v5 estaba inflado por la máquina lenta |
-| **v7** | **80 corridas (2 repeticiones)** | **0,32*** | 9,0 | Más datos: +0,06 de F1 sin más falsas alarmas |
+| v7 | 80 corridas (2 repeticiones) | 0,32* | 9,0 | Más datos: +0,06 de F1 |
+| **v8** | **Ensamble de 3 semillas de la configuración de v7** | **0,36*** | **2,3** | El barrido no mejoró nada; el ensamble redujo las falsas alarmas a la cuarta parte |
 
 \* Desde v5 cambia la etiqueta, así que su F1 no se compara directamente con el de v1–v4. La configuración de v4 con 80 corridas y la etiqueta original llega a F1 0,50, pero esa etiqueta cuenta como cuello de botella la lentitud heredada.
 
@@ -618,7 +674,7 @@ Para una variante de etiquetado más permisiva, sin pisar los archivos: `python 
 
 ## 14. Demo
 
-`ml/demo.py` muestra el modelo v7 funcionando: una tabla que se actualiza cada segundo con la CPU, la p95 y la cola de cada servicio, la probabilidad de cuello de botella en los próximos 30 s, la alarma de v7, la de la regla CPU > 80 % y el estado real. Cuando un servicio entra en cuello de botella, dice con cuántos segundos de anticipación avisó cada método (lead time honesto).
+`ml/demo.py` muestra el modelo final funcionando: una tabla que se actualiza cada segundo con la CPU, la p95 y la cola de cada servicio, la probabilidad de cuello de botella en los próximos 30 s, la alarma del modelo, la de la regla CPU > 80 % y el estado real. Cuando un servicio entra en cuello de botella, dice con cuántos segundos de anticipación avisó cada método (lead time honesto). Por defecto usa **v8**; en pantalla aparece su nombre.
 
 ### 14.1 Modo repetición (recomendado para presentar)
 
@@ -628,21 +684,34 @@ No necesita Docker y siempre muestra lo mismo. Reproduce una corrida grabada con
 python ml/demo.py --replay suave_inj_40_ticket_r2 --velocidad 2
 ```
 
-En esa corrida `ticket` se degrada poco a poco: **v7 avisa 27 s antes** y la regla de CPU no lo detecta. Más adelante llega una inyección abrupta (t = 230 s): ninguno de los dos la anticipa, lo que ilustra el límite del modelo.
+En esa corrida `ticket` se degrada poco a poco: **v8 avisa 20 s antes** (y 22 s en el segundo tramo) y la regla de CPU no lo detecta. Más adelante llega una inyección abrupta (t = 230 s): ninguno de los dos la anticipa, lo que ilustra el límite del modelo. Para ver la misma corrida con v7: `--resultados resultados_v7`.
 
 ### 14.2 Modo en vivo
 
-Mide el sistema real con el modelo final (`lstm_final.pt`). Las entradas se arman con las mismas funciones del entrenamiento (verificado: diferencia máxima 2 × 10⁻⁷).
+Mide el sistema real con el modelo final. Las entradas se arman con las mismas funciones del entrenamiento (verificado: diferencia máxima 2 × 10⁻⁷).
 
 ```powershell
-docker compose up -d                       # terminal 1: los servicios
-python ml/demo.py                          # terminal 2: la tabla en vivo
-python run_experiment.py --scenario normal --duration 280 --run-id demo_pago `
-    --inject pago:70:170:40:150            # terminal 3: degradación gradual y suave en pago
+docker compose restart                     # estado limpio de los servicios
+python ml/demo.py                          # terminal 1: la tabla en vivo (v8)
+# terminal 2, uno de estos:
+python run_experiment.py --scenario normal --duration 360 --peak-users 100 --base-users 15 --run-id vivo_normal_mio --inject ticket:60:90:150:40 --inject ticket:220:60:150
+python run_experiment.py --scenario progresivo --duration 360 --peak-users 60 --base-users 15 --run-id vivo_progresivo_mio
+python run_experiment.py --scenario burst --duration 360 --peak-users 70 --base-users 15 --run-id vivo_burst_mio --inject pago:95:75:150:30 --inject pago:215:75:150
 ```
 
 - Espera 60 s **con tráfico** antes de predecir: el arranque de Locust confunde al modelo en `reservaciones`.
-- En vivo el resultado varía de una corrida a otra, igual que en la evaluación: v7 detecta el 77 % de los episodios graduales, no todos. Para una presentación es más seguro el modo repetición.
-- Las ráfagas (`--scenario burst`) y las inyecciones abruptas saturan de golpe: sirven para mostrar que ningún método puede anticiparlas y que ambos las detectan en ~1 s.
+- En vivo el resultado varía de una corrida a otra, igual que en la evaluación. Para una presentación es más seguro el modo repetición.
+- Las falsas alarmas que se ven en pantalla son las de los 6 servicios juntos: con v8, ~14 por hora (una cada ~4 min).
+- Para comparar con v7: `python ml/demo.py --modelo data/resultados_v7/models/lstm_final.pt`.
 
-Opciones: `--umbral` (corte de la alarma), `--log archivo.csv` (guarda cada segundo), `--sin-pantalla` (texto en vez de tabla), `--duracion` (segundos).
+Opciones: `--modelo` (un `.pt` o un ensamble `.json`), `--umbral` (corte de la alarma), `--log archivo.csv` (guarda cada segundo), `--sin-pantalla` (texto en vez de tabla), `--duracion` (segundos).
+
+### 14.3 Medir tus propias corridas en vivo
+
+```powershell
+Move-Item data\vivo_normal_mio data\vivo\vivo_normal_mio
+New-Item data\vivo\vivo_normal_mio\OK
+python ml/verificar_vivo.py evaluar --modelo data/resultados_v8/modelo_ensamble.json --resultados resultados_v8
+```
+
+El nombre debe empezar con `vivo_normal`, `vivo_progresivo` o `vivo_burst` (así se sabe el escenario). Se miden juntas todas las corridas `vivo_*` de `data/vivo/`.

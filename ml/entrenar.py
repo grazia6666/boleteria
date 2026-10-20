@@ -100,7 +100,23 @@ def main():
                     help="dejar fuera las corridas marcadas en data/calidad_corridas.csv")
     ap.add_argument("--salida", default="resultados", help="subcarpeta de --data para los resultados")
     ap.add_argument("--sin-final", action="store_true", help="no entrenar/guardar el modelo final")
+    # --- opciones para el analisis de hiperparametros (los valores por defecto reproducen v7)
+    ap.add_argument("--seed-folds", type=int, default=None,
+                    help="semilla del reparto en folds (por defecto = --seed); fijarla permite comparar "
+                         "variantes con las mismas corridas de prueba")
+    ap.add_argument("--balanceo", choices=["pos_weight", "ninguno", "submuestreo"], default="pos_weight",
+                    help="pos_weight: pesa los positivos; submuestreo: en cada epoca usa todos los positivos y "
+                         "--ratio negativos por positivo, elegidos al azar")
+    ap.add_argument("--ratio", type=float, default=3.0, help="negativos por positivo con --balanceo submuestreo")
+    ap.add_argument("--parada", choices=["loss", "loss_pond", "ap"], default="loss",
+                    help="metrica de validacion para la parada temprana: loss (BCE sin ponderar, v7), "
+                         "loss_pond (BCE con el mismo pos_weight del entrenamiento) o ap (average precision)")
+    ap.add_argument("--capas", type=int, default=1)
+    ap.add_argument("--dropout", type=float, default=0.0)
+    ap.add_argument("--wd", type=float, default=0.0, help="weight decay (regularizacion L2)")
+    ap.add_argument("--ventana", type=int, default=30, help="segundos de historia que ve el modelo")
     a = ap.parse_args()
+    D.W = a.ventana
 
     import torch
     import torch.nn as nn
@@ -136,12 +152,14 @@ def main():
     class Net(nn.Module):
         def __init__(self):
             super().__init__()
-            self.lstm = nn.LSTM(len(cols), a.hidden, batch_first=True)
+            self.lstm = nn.LSTM(len(cols), a.hidden, num_layers=a.capas, batch_first=True,
+                                dropout=a.dropout if a.capas > 1 else 0.0)
+            self.drop = nn.Dropout(a.dropout)
             self.fc = nn.Linear(a.hidden, 1)
 
         def forward(self, x):
             o, _ = self.lstm(x)
-            return self.fc(o[:, -1]).squeeze(-1)
+            return self.fc(self.drop(o[:, -1])).squeeze(-1)
 
     def normalizar(train_mask):
         mu = ds.X[train_mask, :D.N_CONT].mean(0)
@@ -159,17 +177,29 @@ def main():
                 ps.append(torch.sigmoid(model(Xt[b[:, None] + offs])).numpy())
         return np.concatenate(ps) if ps else np.array([])
 
+    def average_precision(p, y):
+        orden = np.argsort(-p)
+        ys = y[orden]
+        tp = np.cumsum(ys)
+        return float((tp[ys == 1] / (np.where(ys == 1)[0] + 1)).mean()) if ys.sum() else 0.0
+
     def entrenar_modelo(Xt, tr_idx, va_idx):
         model = Net()
-        opt = torch.optim.Adam(model.parameters(), lr=a.lr)
-        ytr = torch.from_numpy(ds.y[tr_idx].astype(np.float32))
+        opt = torch.optim.Adam(model.parameters(), lr=a.lr, weight_decay=a.wd)
+        ytr_np = ds.y[tr_idx].astype(np.float32)
+        ytr = torch.from_numpy(ytr_np)
         pos = float(ytr.sum())
         pw = torch.tensor([(len(ytr) - pos) / max(pos, 1.0)])
-        lf = nn.BCEWithLogitsLoss(pos_weight=pw)
+        lf = nn.BCEWithLogitsLoss(pos_weight=pw if a.balanceo == "pos_weight" else None)
+        idx_pos, idx_neg = np.where(ytr_np == 1)[0], np.where(ytr_np == 0)[0]
         mejor, mejor_estado, sin_mejora = np.inf, None, 0
         for ep in range(a.epocas):
             model.train()
-            perm = np.random.permutation(len(tr_idx))
+            if a.balanceo == "submuestreo":
+                n_neg = min(len(idx_neg), int(a.ratio * len(idx_pos)))
+                perm = np.random.permutation(np.concatenate([idx_pos, np.random.choice(idx_neg, n_neg, False)]))
+            else:
+                perm = np.random.permutation(len(tr_idx))
             tot = 0.0
             for i in range(0, len(perm), a.batch):
                 sel = perm[i:i + a.batch]
@@ -181,11 +211,19 @@ def main():
                 tot += loss.item() * len(sel)
             if len(va_idx):
                 pv = predecir(model, Xt, va_idx)
-                yv = torch.from_numpy(ds.y[va_idx].astype(np.float32))
-                lv = float(nn.functional.binary_cross_entropy(torch.from_numpy(pv).clamp(1e-6, 1 - 1e-6), yv))
+                yv_np = ds.y[va_idx].astype(np.float32)
+                yv = torch.from_numpy(yv_np)
+                pc = torch.from_numpy(pv).clamp(1e-6, 1 - 1e-6)
+                if a.parada == "loss":
+                    lv = float(nn.functional.binary_cross_entropy(pc, yv))
+                elif a.parada == "loss_pond":
+                    w = torch.where(yv == 1, pw, torch.ones(1))
+                    lv = float(nn.functional.binary_cross_entropy(pc, yv, weight=w))
+                else:   # cuanto mayor la AP mejor: se minimiza 1 - AP
+                    lv = 1.0 - average_precision(pv, yv_np)
             else:
                 lv = tot / len(perm)
-            print("    epoca %2d  loss_train=%.4f  loss_val=%.4f" % (ep + 1, tot / len(perm), lv))
+            print("    epoca %2d  loss_train=%.4f  val(%s)=%.4f" % (ep + 1, tot / len(perm), a.parada, lv))
             if lv < mejor - 1e-4:
                 mejor = lv
                 mejor_estado = {k: v.clone() for k, v in model.state_dict().items()}
@@ -222,7 +260,7 @@ def main():
         return max(ok, key=lambda c: c[1])[0] if ok else 0.5
 
     # ------------------------------------------------------------ validacion cruzada
-    fold_de = asignar_folds(ds, a.folds, a.seed)
+    fold_de = asignar_folds(ds, a.folds, a.seed if a.seed_folds is None else a.seed_folds)
     fold_fila = np.array([fold_de[r] for r in ds.run])
     prob = np.full(ds.N, np.nan)
     alarma = np.zeros(ds.N, dtype=bool)
@@ -231,7 +269,7 @@ def main():
     for k in range(a.folds):
         test_runs = {r for r, f in fold_de.items() if f == k}
         train_runs = [r for r, f in fold_de.items() if f != k]
-        val_runs = split_val(ds, train_runs, a.seed + k)
+        val_runs = split_val(ds, train_runs, (a.seed if a.seed_folds is None else a.seed_folds) + k)
         es_te = np.isin(ds.run, list(test_runs))
         es_va = np.isin(ds.run, list(val_runs))
         es_tr = ~es_te & ~es_va
@@ -319,7 +357,7 @@ def main():
         model = entrenar_modelo(Xt, tr_idx, va_idx)
         thr = float(np.median(umbrales))
         torch.save({"state": model.state_dict(), "mu": mu.tolist(), "sd": sd.tolist(), "umbral": thr,
-                    "W": D.W, "H": D.H, "hidden": a.hidden, "columnas": D.COLUMNAS, "servicios": D.SERVICIOS,
+                    "W": D.W, "H": D.H, "hidden": a.hidden, "capas": a.capas, "dropout": a.dropout, "columnas": D.COLUMNAS, "servicios": D.SERVICIOS,
                     "cols": cols, "feats_usadas": feats_usadas, "objetivo": a.objetivo,
                     "dependencias": D.DEPENDE},
                    os.path.join(out, "models", "lstm_final.pt"))
