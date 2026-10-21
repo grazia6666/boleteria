@@ -19,7 +19,7 @@ Esta guía explica **qué medimos, por qué, cómo se genera cada dato, qué par
 10. [Métricas de evaluación](#10-métricas-de-evaluación)
 11. [Comandos en orden](#11-comandos-en-orden)
 12. [Limitaciones que debes conocer](#12-limitaciones-que-debes-conocer)
-13. [Resultados del modelo final (v8)](#13-resultados-del-modelo-final-v8)
+13. [Resultados del modelo final (v9)](#13-resultados-del-modelo-final-v9)
 14. [Demo](#14-demo)
 
 ---
@@ -35,7 +35,7 @@ Esta guía explica **qué medimos, por qué, cómo se genera cada dato, qué par
    - **LSTM:** una red neuronal que mira los últimos 30 s de métricas del servicio **y de los servicios a los que llama**, y estima la probabilidad de que haya un cuello de botella en los próximos 30 s.
 6. Medimos con **Precision, Recall, F1, falsas alarmas por hora y Prediction Lead Time** (cuántos segundos antes avisamos, contado de forma honesta).
 
-**Resultado del modelo final (v8, ensamble de 3 LSTM, 80 corridas):** F1 0,36 contra 0,11 de la regla de CPU, con precisión 0,72 y 2,3 falsas alarmas por hora de servicio (menos que la propia regla de CPU); detecta el 85 % de las degradaciones graduales con ~9 s de anticipación (mediana). Verificado en vivo con 6 corridas nuevas. Detalle en la [sección 13](#13-resultados-del-modelo-final-v8).
+**Resultado del modelo final (v9, ensamble de 3 LSTM, 116 corridas):** se probó con **36 corridas de calendario aleatorio** (fallos y ráfagas en orden y momentos al azar), donde el modelo no puede "adivinar" por el horario del experimento. Ahí v9 logra F1 0,21 contra 0,10 de la regla de CPU, avisa el 88 % de las degradaciones graduales (mediana 8 s antes) y, a la misma tasa de falsas alarmas que el modelo anterior (v8), es mejor en casi todo: precisión 0,63 contra 0,58, recall 0,11 contra 0,08. En la validación cruzada de las 116 corridas: F1 0,31 contra 0,11, precisión 0,55, 5,2 falsas alarmas por hora de servicio. Detalle en la [sección 13](#13-resultados-del-modelo-final-v9).
 
 ```
 tráfico (Locust) ──► microservicios ──► recolector ──► CSV ──► etiquetado ──► baseline / LSTM ──► métricas
@@ -229,9 +229,9 @@ Locust crea **usuarios virtuales en bucle cerrado**: cada usuario hace una petic
 | --- | --- | --- |
 | **normal** | Usuarios constantes (`--base-users`, 15 por defecto) | Línea base y base para inyectar cuellos de botella |
 | **progresivo** | Crece de 5 usuarios hasta `--peak-users` (60) y vuelve a bajar, en forma de triángulo (≈65 % del tiempo subiendo) | Saturación natural y gradual |
-| **burst** | Carga base con **ráfagas** a `--peak-users` (70): la primera a los 60 s, luego cada 120 s, de 25 s de duración | Picos bruscos de tráfico |
+| **burst** | Carga base con **ráfagas** a `--peak-users` (70): la primera a los 60 s, luego cada 120 s, de 25 s de duración. Con `BURST_TIMES` las ráfagas empiezan en los segundos indicados (calendario irregular) | Picos bruscos de tráfico |
 
-Parámetros de entorno de Locust: `SCENARIO`, `DURATION`, `BASE_USERS`, `PEAK_USERS`, `BURST_START=60`, `BURST_EVERY=120`, `BURST_LEN=25`.
+Parámetros de entorno de Locust: `SCENARIO`, `DURATION`, `BASE_USERS`, `PEAK_USERS`, `BURST_START=60`, `BURST_EVERY=120`, `BURST_LEN=25`, `BURST_TIMES` (lista de inicios separados por coma; si está, reemplaza a `BURST_START`/`BURST_EVERY`).
 
 ### 6.2 El inyector (`loadtest/inyector.py`)
 
@@ -259,6 +259,8 @@ Lanza a la vez el recolector, Locust y el inyector, y guarda todo en `data/<run_
 | `--base-users` | 15 | Usuarios base |
 | `--peak-users` | 100 | Usuarios en el pico |
 | `--run-id` | auto | Nombre de la carpeta |
+| `--burst-times` | ninguno | Inicios de las ráfagas en burst, p. ej. `67,179,329` (calendario irregular) |
+| `--burst-len` | 25 | Duración de cada ráfaga (s) |
 
 Ejemplo: `python run_experiment.py --scenario normal --duration 150 --inject pago:40:60:150`
 
@@ -305,7 +307,19 @@ Cada corrida con inyección contiene **dos eventos**: uno gradual (con rampa) y 
 - `var_inj`: variedad de severidad, para no aprender un único patrón.
 - `suave_inj`: degradaciones lentas, las únicas realmente anticipables, y casos que no llegan a saturar.
 
-Los datos actuales son la campaña con `--reps 2`: **80 corridas**, todas dentro del control de calidad, con 144 inyecciones (72 graduales y 72 abruptas).
+Los primeros datos son la campaña con `--reps 2`: **80 corridas**, todas dentro del control de calidad, con 144 inyecciones (72 graduales y 72 abruptas).
+
+### 6.6 Campaña con calendario aleatorio (grupos `rnd_*`)
+
+En el plan fijo, el fallo abrupto llega siempre ~2,5 min después del gradual en el mismo servicio y las ráfagas caen cada 120 s. Un modelo puede aprender ese **horario** en vez de las métricas (se vio con la ventana de 60 s, sección 9.3). Para medirlo y evitarlo se agregaron 40 corridas con el calendario sorteado (`python run_campaign.py --only rnd_normal,rnd_burst,rnd_progresivo`):
+
+| Grupo | Corridas | Escenario | Qué se sortea |
+| --- | --- | --- | --- |
+| `rnd_normal` | 24 | normal, 300–420 s, 12–20 usuarios | 1 a 3 inyecciones sin solaparse, desde el segundo 45: servicio, orden, tipo (gradual o abrupta, 50/50), intensidad (25, 40, 90, 150 o 250), duración y rampa |
+| `rnd_burst` | 10 | burst, 360–420 s, pico 55–85 | 0 a 2 inyecciones como arriba, y además 2 a 4 ráfagas de 15–35 s en momentos sorteados (desde el segundo 60, separadas 40–120 s, vía `--burst-times`) |
+| `rnd_progresivo` | 6 | progresivo, 300–420 s, pico 45–90 | 0 o 1 inyección sorteada sobre el crecimiento natural |
+
+Cada corrida usa su propia semilla (`grupo-número`), así que el plan es reproducible. Hay 54 inyecciones (23 graduales) en todos los órdenes posibles. **36 de las 40** pasaron el control de calidad; las otras 4 (`rnd_normal_10`, `rnd_progresivo_02` a `04`) salieron contaminadas (la máquina estaba ~2 × más lenta ese día) y no se usan. En total, el modelo final se entrena con **116 corridas y 275 episodios**.
 
 ---
 
@@ -394,15 +408,19 @@ boleteria_nube/
 │   ├── postproceso.py              ← suavizado e híbrido de alarmas, sin reentrenar
 │   ├── por_escenario.py            ← métricas por escenario de carga (normal / progresivo / burst)
 │   ├── barrido.py                  ← barrido de hiperparámetros y balanceo (varias semillas)
-│   ├── ensamble.py                 ← ensamble de semillas: evalúa y arma el modelo final v8
+│   ├── ensamble.py                 ← ensamble de semillas: evalúa y arma el modelo final (v8, v9)
+│   ├── evaluar_externo.py          ← mide un modelo solo en un grupo de corridas (p. ej. las rnd_*)
+│   ├── pipeline_v9.sh              ← campaña aleatoria → etiquetado → v8 en rnd_* → v9 → tablas
 │   ├── demo.py                     ← demo en vivo y en modo repetición
 │   └── verificar_vivo.py           ← corridas nuevas en vivo + evaluación con el mismo protocolo
 └── data/                           ← (no se sube a git: se regenera con los scripts)
     ├── <run_id>/                   ← una carpeta por corrida
     ├── dataset_metrics.csv, dataset_edges.csv, resumen_corridas.csv, calidad_corridas.csv
     ├── dataset_etiquetado[_propio].csv, episodios[_propio].csv, umbrales[_propio].json
-    ├── resultados_v8/              ← modelo final: s1, s2, s3 + modelo_ensamble.json + predicciones
-    ├── resultados_v7/              ← modelo anterior (un solo LSTM)
+    ├── resultados_v9/              ← modelo final: s1, s2, s3 + modelo_ensamble.json + predicciones
+    ├── resultados_v8/              ← modelo anterior (mismo ensamble, 80 corridas de calendario fijo)
+    ├── resultados_v7/              ← un solo LSTM
+    ├── externo_<modelo>_rnd.csv    ← resultados de evaluar_externo.py en las corridas aleatorias
     ├── barrido/                    ← 40 entrenamientos del barrido y su resumen
     └── vivo/                       ← corridas de la verificación en vivo
 ```
@@ -429,7 +447,7 @@ Flujo de datos:
 
 ### 9.1 Qué entra al modelo
 
-Para cada servicio y cada segundo *t*, el modelo ve una **ventana de 30 s** (de *t-29* a *t*). En el modelo final (cada uno de los 3 LSTM de v8, igual que v7, con `--contexto --tendencias`) cada segundo es un vector de **27 valores**:
+Para cada servicio y cada segundo *t*, el modelo ve una **ventana de 30 s** (de *t-29* a *t*). En el modelo final (cada uno de los 3 LSTM de v9, con la misma configuración que v7 y v8: `--contexto --tendencias`) cada segundo es un vector de **27 valores**:
 
 | Parte | Cantidad | Detalle |
 | --- | --- | --- |
@@ -481,6 +499,8 @@ ventana 30 s × 27 valores ─► LSTM (1 capa, 64 unidades) ─► último paso
 
 **Qué se aprendió con el barrido** (`ml/barrido.py`, 13 variantes × 3 semillas, mismos folds): ninguna variante de balanceo, parada temprana, tamaño, capas, lr, weight decay o lote mejoró a la configuración de v7 por más que la variación entre semillas (±0,02 de F1). La **ventana de 60 s** subió el F1 a 0,56, pero al compararla sobre los mismos segundos y por causa se vio que la mejora venía de **memorizar el calendario del experimento**: "avisaba" el 58 % de los fallos abruptos con 21 s de anticipación (imposible: no tienen señal previa) porque veía el final del fallo gradual, y anticipaba los picos de burst, que caen siempre cada 120 s. Se descartó. Lo que sí sirvió fue el **ensamble de semillas** (sección 13).
 
+**La ventana de 60 s, otra vez, con el calendario aleatorio** (`data/resultados_v9w60/`): con las 116 corridas su F1 en validación cruzada sube a 0,42 (v9: 0,31), pero el desglose confirma el diagnóstico. En las 80 corridas de calendario fijo sigue "avisando" el **48–52 % de los fallos abruptos**, imposible sin señal previa. En las 36 corridas aleatorias, donde no hay horario que memorizar, a igual tasa de falsas alarmas **no mejora a v9** (F1 0,22 contra 0,24 con ~3,3 falsas alarmas/h; precisión 0,40 contra 0,56) y sus abruptos avisados bajan al nivel del azar (7 %). Se descartó de nuevo.
+
 Pérdida: entropía cruzada binaria con `pos_weight`, porque los instantes "peligrosos" son pocos frente a los normales.
 
 ### 9.4 Cómo se evita hacer trampa (protocolo)
@@ -499,7 +519,7 @@ Pérdida: entropía cruzada binaria con `pos_weight`, porque los instantes "peli
 | **Persistencia** | Alarma si ya hay cuello de botella ahora | Referencia mínima: la etiqueta deriva de la latencia, que también es entrada del modelo. En vista B vale 0 por construcción |
 | **LSTM** | Alarma si P ≥ umbral elegido en validación | La primera versión de IA |
 
-### 9.6 Archivos que produce `entrenar.py` (en `data/<--salida>/`; el modelo final está en `data/resultados_v8/`)
+### 9.6 Archivos que produce `entrenar.py` (en `data/<--salida>/`; el modelo final está en `data/resultados_v9/`)
 
 | Archivo | Contenido |
 | --- | --- |
@@ -540,11 +560,13 @@ Se cuenta cada **servicio-segundo** como una decisión: "¿alarmo o no?".
 
 **Trampa a evitar:** una alarma encendida *siempre* daba un lead de 30 s con el cálculo bruto. Así se vio en la primera versión: en propagación, 66 de 72 detecciones tenían la alarma encendida toda la ventana. Por eso el lead se cuenta de forma honesta y **nunca se reporta solo**: siempre junto a precision y falsas alarmas por hora.
 
-**Nivel del azar:** con *F* falsas alarmas por hora, una ventana de 30 s recibe una alarma casual con probabilidad ≈ *F* × 30 / 3600. Con 2,3 por hora (v8) es ≈ 2 %; con 9 por hora (v7) era ≈ 8 %. Una tasa de detección cercana a ese valor no es anticipación.
+**Nivel del azar:** con *F* falsas alarmas por hora, una ventana de 30 s recibe una alarma casual con probabilidad ≈ *F* × 30 / 3600. Con 2,3 por hora (v8) es ≈ 2 %; con 5,2 por hora (v9) ≈ 4 %; con 9 por hora (v7) era ≈ 8 %. Una tasa de detección cercana a ese valor no es anticipación.
 
-**Falsas alarmas: por servicio y por sistema.** La cifra de las tablas es **por hora de servicio**. La demo muestra los 6 servicios a la vez, así que en pantalla se ven **6 veces más**: con v8, ~14 por hora en todo el sistema (una cada ~4 min); con v7 eran ~54 (casi una por minuto).
+**Falsas alarmas: por servicio y por sistema.** La cifra de las tablas es **por hora de servicio**. La demo muestra los 6 servicios a la vez, así que en pantalla se ven **6 veces más**: con v9, ~31 por hora en todo el sistema (una cada ~2 min) en la validación cruzada y ~19 en las corridas aleatorias; con v8, ~14; con v7 eran ~54 (casi una por minuto).
 
-**Precisión por segundo y por alarma.** La precisión de las tablas cuenta segundos con alarma. Contando cada encendido de la alarma, la de v7 bajaba de 0,42 a 0,29, porque sus alarmas falsas eran parpadeos cortos y las correctas, largas. Con v8 es **0,52 por alarma** (86 de 166 encendidos): más de la mitad de las veces que suena, viene un problema real. Es lo que percibe un operador.
+**Precisión por segundo y por alarma.** La precisión de las tablas cuenta segundos con alarma. Contando cada encendido de la alarma, la de v7 bajaba de 0,42 a 0,29, porque sus alarmas falsas eran parpadeos cortos y las correctas, largas. Con v8 era **0,52 por alarma** (86 de 166 encendidos); con v9 es 0,34 en la validación cruzada y 0,40 en las corridas aleatorias. Es lo que percibe un operador.
+
+**Comparar modelos a igual tasa de falsas alarmas.** Cada modelo elige su umbral en validación, así que uno puede tener más recall solo porque alarma más. Para compararlos de forma justa se mueve el umbral de ambos hasta que tengan las mismas falsas alarmas por hora y se mira el resto (sección 13.1).
 
 **Post-proceso (`ml/postproceso.py`):** sin reentrenar, mide el efecto de **suavizar** la alarma (que suene solo si el modelo dijo "sí" en 3 de los últimos 5 s) y del **híbrido** "LSTM o CPU > 80 %". El suavizado reduce las falsas alarmas a la mitad pero retrasa el aviso; el híbrido no aporta.
 
@@ -578,23 +600,32 @@ python ml/etiquetar.py --solo-propio --sufijo _propio
 # 6. Baseline
 python ml/baseline.py --sufijo _propio
 
-# 7. Modelo final v8: 3 LSTM con la configuración de v7 y distinta semilla (mismos folds), y su ensamble
-python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 1 --salida resultados_v8/s1
-python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 2 --salida resultados_v8/s2
-python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 3 --salida resultados_v8/s3
-python ml/ensamble.py --dirs resultados_v8/s1 resultados_v8/s2 resultados_v8/s3 --salida resultados_v8
+# 3b. Campaña con calendario aleatorio (40 corridas, ≈ 4,9 h)
+python run_campaign.py --only rnd_normal,rnd_burst,rnd_progresivo
+
+# 7. Modelo final v9: 3 LSTM con la configuración de v7 y distinta semilla (mismos folds), y su ensamble
+python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 1 --salida resultados_v9/s1
+python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 2 --salida resultados_v9/s2
+python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 3 --salida resultados_v9/s3
+python ml/ensamble.py --dirs resultados_v9/s1 resultados_v9/s2 resultados_v9/s3 --salida resultados_v9
 
 # 8. Tablas del modelo final: post-proceso y por escenario de carga
-python ml/postproceso.py --sufijo _propio --resultados resultados_v8
-python ml/por_escenario.py --resultados resultados_v8
+python ml/postproceso.py --sufijo _propio --resultados resultados_v9
+python ml/por_escenario.py --resultados resultados_v9
+
+# 8b. Solo las corridas de calendario aleatorio: v8 (que nunca las vio) y v9 (validación cruzada)
+python ml/evaluar_externo.py --modelo data/resultados_v8/modelo_ensamble.json --nombre v8
+python ml/evaluar_externo.py --resultados resultados_v9 --nombre v9
 
 # 9. (opcional) Barrido de hiperparámetros, ~4 h con la máquina libre
 python ml/barrido.py
 
 # 10. (opcional) Verificación en vivo: 6 corridas nuevas (~45 min, Docker arriba) y su evaluación
 python ml/verificar_vivo.py correr
-python ml/verificar_vivo.py evaluar --modelo data/resultados_v8/modelo_ensamble.json --resultados resultados_v8
+python ml/verificar_vivo.py evaluar        # v9; para otro modelo: --modelo ... --resultados ...
 ```
+
+Los pasos 3b a 8b, más la prueba de la ventana de 60 s, están encadenados en `bash ml/pipeline_v9.sh` (salta las corridas ya hechas; registro en `data/pipeline_v9.log`).
 
 Cada entrenamiento tarda ~5–7 min con la máquina libre. **No entrenes mientras corre una campaña** (contamina las mediciones).
 
@@ -606,10 +637,12 @@ Para una variante de etiquetado más permisiva, sin pisar los archivos: `python 
 
 - **No se alcanzan los 30 s de anticipación:** las métricas solo empiezan a moverse unos segundos antes del problema. La mediana real es ~9 s en fallos graduales. En el crecimiento progresivo el modelo sí llega a avisar con más de 30 s, pero la métrica estricta no lo cuenta (solo cuenta encendidos dentro de los 30 s previos).
 - **Lo abrupto no se puede anticipar:** sin señal previa en las métricas, ningún modelo puede avisar a tiempo. Una vez iniciado, tanto el LSTM como la regla de CPU lo detectan en ~1 s.
-- **El modelo aprende parte del calendario del experimento:** en todas las corridas el fallo abrupto llega ~45 s después del gradual en el mismo servicio, y los picos de burst caen siempre cada 120 s. Algunos "aciertos" en abruptos y picos vienen de ese patrón, no de las métricas. Lo correcto sería variar el orden y los tiempos de las inyecciones y de los picos en una próxima campaña.
-- **Falsas alarmas:** 2,3 por hora **por servicio** con v8, que en el sistema completo (6 servicios) son ~14 por hora. Bajaron mucho respecto a v7 (~54 por hora en el sistema), pero siguen siendo la principal debilidad para un uso real.
+- **El calendario del experimento se puede memorizar:** en las 80 corridas de calendario fijo el fallo abrupto llega siempre después del gradual en el mismo servicio y los picos de burst caen cada 120 s. Con las 36 corridas de calendario aleatorio (sección 6.6) se midió cuánto de eso había: v8, en corridas que nunca vio, avisó solo el 7 % de los abruptos y el 4 % de los picos, al nivel del azar. **Las cifras honestas del proyecto son las de esas corridas (sección 13.1)**, más bajas que las de la validación cruzada. En las corridas de calendario fijo, las cifras de cualquier modelo siguen algo infladas por ese patrón.
+- **Recall bajo en corridas realistas:** con calendario aleatorio v9 detecta ~13 % de los segundos de riesgo. Lo que sí anticipa de forma fiable son las degradaciones graduales (88 %); los fallos abruptos, la propagación y la mayoría de las ráfagas solo se detectan cuando ya empezaron.
+- **Falsas alarmas:** 5,2 por hora **por servicio** con v9 en la validación cruzada (umbral de cada fold) y 3,1 en las corridas aleatorias con el umbral final, que en el sistema completo (6 servicios) son ~19–31 por hora. Siguen siendo la principal debilidad para un uso real. Subiendo el umbral a 0,91 bajan a ~1,5 por hora de servicio, con algo menos de recall.
+- **Faltan 4 corridas aleatorias** (`rnd_normal_10`, `rnd_progresivo_02` a `04`) que salieron contaminadas; se pueden completar otro día con `python run_campaign.py --only rnd_normal,rnd_burst,rnd_progresivo --repetir-contaminadas` si el control de calidad vuelve a dar ~1 ×.
 - **La etiqueta sale de la latencia**, que además es una entrada del modelo. Sin las entradas de latencia el LSTM conserva ~85 % de su F1, así que no se limita a leer la etiqueta.
-- **Pocos episodios en algunos escenarios:** `progresivo_base` tiene solo 4 corridas (8 episodios).
+- **Pocos episodios en algunos escenarios:** el crecimiento progresivo tiene 7 corridas (13 episodios).
 - **Todo corre en una sola máquina:** hay ruido por contención (de ahí el control de calidad) y, bajo saturación fuerte, el `/metrics` a veces no responde (`scrape_ok = 0`).
 - **El p95 es aproximado** (cubetas de histograma).
 - **Tráfico simulado y simple:** todas las peticiones usan el mismo usuario (no genera contención: ningún servicio bloquea por usuario).
@@ -617,46 +650,67 @@ Para una variante de etiquetado más permisiva, sin pisar los archivos: `python 
 
 ---
 
-## 13. Resultados del modelo final (v8)
+## 13. Resultados del modelo final (v9)
 
-**Modelo v8:** un **ensamble de 3 LSTM** con la configuración de v7 (contexto de dependencias, tendencias, etiqueta de cuello de botella propio, 80 corridas) entrenados con las semillas 1, 2 y 3. La probabilidad es el **promedio de los tres** y la alarma suena si supera **0,91** (mediana de los umbrales por fold del ensamble). Archivo: `data/resultados_v8/modelo_ensamble.json`, que apunta a `s1`, `s2` y `s3/models/lstm_final.pt`.
+**Modelo v9:** un **ensamble de 3 LSTM** con la misma configuración que v7 y v8 (contexto de dependencias, tendencias, etiqueta de cuello de botella propio, ventana de 30 s), entrenado ahora con **116 corridas**, incluidas las 36 de calendario aleatorio, con las semillas 1, 2 y 3. La probabilidad es el **promedio de los tres** y la alarma suena si supera **0,875** (mediana de los umbrales por fold del ensamble, la misma regla que dio 0,91 en v8). Archivo: `data/resultados_v9/modelo_ensamble.json`, que apunta a `s1`, `s2` y `s3/models/lstm_final.pt`.
 
-**Por qué un ensamble.** v7 es 100 % reproducible (con la semilla 42 da exactamente lo mismo), pero tuvo mala suerte: en el fold 4 la validación eligió un umbral de 0,55 (en los demás, 0,80–0,95) y eso disparó sus falsas alarmas. Con la misma configuración y otras semillas salen 3,5–4,3 falsas alarmas por hora en vez de 9. Promediar 3 modelos reduce esa variación y cancela los parpadeos sueltos de cada uno.
+**Por qué un ensamble.** Con una sola red, la semilla cambia mucho el umbral que elige la validación (v7 eligió 0,55 en un fold y disparó sus falsas alarmas). Promediar 3 modelos reduce esa variación y cancela los parpadeos sueltos de cada uno.
 
-### 13.1 Vista B, validación cruzada (80 corridas)
+### 13.1 La prueba que importa: 36 corridas de calendario aleatorio
+
+En estas corridas los fallos y las ráfagas llegan en orden y momentos sorteados, así que un modelo no puede acertar por memorizar el horario del experimento. **v8 nunca las vio** (se entrenó antes de que existieran): es una prueba externa. Para **v9** se usan las predicciones de su validación cruzada: cada corrida la predijo un modelo que no la vio. Se reproduce con `ml/evaluar_externo.py`.
+
+| Modelo (umbral) | Precisión | Recall | F1 | Falsas alarmas/h (servicio / sistema) | Precisión por alarma | Graduales avisados (mediana) | Abruptos avisados | Ráfagas y saturación natural avisadas | Propagación avisada |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| v8 (0,91) | 0,58 | 0,08 | 0,14 | 1,6 / 9,5 | 0,45 | 94 % (7 s) | 7 % | 4 % | 0 % |
+| **v9 (0,91, misma tasa de falsas alarmas que v8)** | **0,63** | **0,11** | **0,19** | 1,5 / 9,2 | **0,54** | 88 % | 15 % | 21 % | 8 % |
+| **v9 (0,875, umbral del modelo final)** | 0,57 | 0,13 | 0,21 | 3,1 / 19 | 0,40 | 88 % | 19 % | 29 % | 15 % |
+| v9 (umbral de cada fold, 0,80–0,90) | 0,41 | 0,14 | 0,21 | 6,2 / 37 | 0,27 | 88 % (8 s) | 15 % | 33 % | 8 % |
+| CPU > 80 % | 0,37 | 0,06 | 0,10 | 2,1 / 12 | 0,42 | 38 % (4,5 s) | 11 % | 4 % | 8 % |
+
+Episodios: 16 graduales, 27 abruptos, 24 de ráfagas o saturación natural y 13 de propagación.
+
+- **Lo que v8 había aprendido del calendario no se sostiene:** en corridas aleatorias avisa el 7 % de los abruptos y el 4 % de los picos, al nivel del azar (~1,3 % por ventana con su tasa de falsas alarmas). Su anticipación de las degradaciones graduales, en cambio, es real: 94 %.
+- **A igual tasa de falsas alarmas, v9 es mejor que v8 en casi todo** (solo pierde un episodio gradual de 16): más precisión, más recall, mejor precisión por alarma, y empieza a anticipar algunas ráfagas (21 % contra 4 %), que ahora llegan en momentos imprevisibles, así que es por las métricas.
+- **El umbral decide el equilibrio:** con el umbral del modelo final (0,875) v9 avisa más, pero con el doble de falsas alarmas que con 0,91. En la validación cruzada un fold eligió 0,80, y por eso esa fila tiene 6,2 falsas alarmas por hora.
+
+### 13.2 Validación cruzada completa (116 corridas)
 
 | Método | Precisión | Recall | F1 | Falsas alarmas/h (por servicio) | Precisión por alarma | Graduales avisados (mediana) | Episodios con ≥ 15 s |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **v8 (ensamble)** | **0,72** | 0,24 | **0,36** | **2,3** | **0,52** | **85 % (9 s)** | 13 % |
-| v7 (un LSTM, semilla 42) | 0,42 | 0,26 | 0,32 | 9,0 | 0,29 | 77 % (8,5 s) | 13 % |
-| Cada semilla sola (1, 2, 3) | 0,60–0,68 | 0,25 | 0,35–0,37 | 3,5–4,3 | — | 80–85 % | 11–15 % |
-| CPU > 80 % | 0,47 | 0,06 | 0,11 | 2,8 | 0,41 | 38 % (4 s) | 4 % |
+| **v9 (ensamble, umbral de cada fold)** | **0,55** | **0,21** | **0,31** | 5,2 | 0,34 | **81 % (9 s)** | 13 % |
+| v9 con umbral único 0,875 | 0,62 | 0,21 | 0,31 | 3,7 | 0,41 | 81 % | — |
+| Cada semilla sola (1, 2, 3) | 0,44–0,52 | 0,23–0,24 | 0,30–0,32 | 5,7–7,7 | — | 83–85 % | 13–14 % |
+| CPU > 80 % | 0,44 | 0,06 | 0,11 | 2,6 | 0,42 | 38 % (4 s) | 4 % |
 
-### 13.2 Por escenario de carga (validación cruzada)
+Estas cifras **no se comparan directamente con las de v8** (F1 0,36 y 2,3 falsas alarmas/h con 80 corridas): ahora entran las 36 corridas aleatorias, más difíciles y sin horario que aprovechar. La comparación justa es la de la sección 13.1.
 
-| Escenario | Corridas | Episodios | F1 v8 / CPU | Falsas alarmas/h v8 / CPU | Avisados antes de empezar v8 / CPU | Anticipación mediana v8 / CPU |
+### 13.3 Por escenario de carga (validación cruzada, 116 corridas)
+
+| Escenario | Corridas | Episodios | F1 v9 / CPU | Falsas alarmas/h v9 / CPU | Avisados antes de empezar v9 / CPU | Anticipación mediana v9 / CPU |
 | --- | --- | --- | --- | --- | --- | --- |
-| Carga normal (con fallos inyectados) | 64 | 125 | **0,26** / 0,09 | **1,9** / 2,4 | **42 %** / 22 % | **9 s** / 5 s |
-| Crecimiento progresivo | 4 | 8 | **0,78** / 0,57 | **4,8** / 17,5 | **50 %** / 0 % | **25,5 s** / — |
-| Burst de solicitudes | 12 | 62 | **0,49** / 0,02 | 3,8 / 0 | **34 %** / 8 % | **7 s** / 2 s |
+| Carga normal (con fallos inyectados) | 87 | 162 | **0,23** / 0,08 | 4,7 / 2,0 | **40 %** / 21 % | **9 s** / 5 s |
+| Crecimiento progresivo | 7 | 13 | **0,80** / 0,51 | **2,9** / 16,1 | **62 %** / 15 % | **22 s** / 13,5 s |
+| Burst de solicitudes | 22 | 100 | **0,35** / 0,01 | 7,8 / 0,4 | **28 %** / 7 % | **9 s** / 2 s |
 
-Con v7 eran: normal 0,25 (9,3 falsas alarmas/h), progresivo 0,53 (4,3) y burst 0,43 (9,4). Se reproduce con `python ml/por_escenario.py --resultados resultados_v8`.
+Se reproduce con `python ml/por_escenario.py --resultados resultados_v9`.
 
-### 13.3 Verificación en vivo (6 corridas nuevas que ningún modelo vio)
+### 13.4 Verificación en vivo (6 corridas nuevas que ningún modelo vio)
 
-`ml/verificar_vivo.py` corrió 6 corridas nuevas (2 de carga normal con fallos en `ticket` y `eventos`, 2 de crecimiento progresivo y 2 de burst con fallos en `pago` y `notificaciones`), con la demo en vivo grabando, y las midió con el mismo protocolo. Se excluyó un tramo de 40 s en que la laptop se suspendió (5 episodios falsos).
+`ml/verificar_vivo.py` corrió 6 corridas nuevas (2 de carga normal con fallos en `ticket` y `eventos`, 2 de crecimiento progresivo y 2 de burst con fallos en `pago` y `notificaciones`), con la demo en vivo grabando, y las midió con el mismo protocolo. Se excluyó un tramo de 40 s en que la laptop se suspendió (5 episodios falsos). Estas corridas usan el **calendario fijo**, el que v8 conoce.
 
 | Las 6 corridas juntas | Precisión | Recall | F1 | Falsas alarmas/h (servicio / sistema) | Graduales avisados (mediana) |
 | --- | --- | --- | --- | --- | --- |
-| **v8** | **0,77** | 0,28 | 0,41 | **3,7 / 22** | 4 de 4 (5,5 s) |
-| v7 | 0,66 | 0,37 | **0,47** | 8,9 / 54 | 4 de 4 (6,5 s) |
+| **v9** | **0,78** | 0,24 | 0,36 | 4,8 / 29 | 4 de 4 (6 s) |
+| v8 | 0,77 | 0,28 | **0,41** | **3,7 / 22** | 4 de 4 (5,5 s) |
+| v7 | 0,66 | 0,37 | 0,47 | 8,9 / 54 | 4 de 4 (6,5 s) |
 | CPU > 80 % | 0,38 | 0,10 | 0,15 | 4,8 / 29 | 1 de 4 (1 s) |
 
-- En corridas nuevas se confirma lo de la validación cruzada: **v8 reduce las falsas alarmas a menos de la mitad** (menos que la regla de CPU) y sigue avisando todas las degradaciones graduales. A cambio es más conservador y su recall baja un poco.
+- Los tres modelos avisan todas las degradaciones graduales antes que la regla de CPU, con precisión ~0,8 en v8 y v9.
+- En calendario fijo v8 queda algo por encima de v9, como era de esperar: es el patrón que aprendió. En calendario aleatorio (13.1) gana v9.
 - En el crecimiento progresivo los modelos encendieron la alarma **34–38 s antes** de la saturación; la métrica estricta no lo cuenta porque empezó antes de la ventana de 30 s.
-- Algunos "avisos" de fallos abruptos (26–28 s) y de picos de burst (35–42 s) vienen del calendario fijo del experimento, no de las métricas.
 
-### 13.4 Cómo se llegó aquí
+### 13.5 Cómo se llegó aquí
 
 | Versión | Qué cambió | F1 | Falsas alarmas/h | Lección |
 | --- | --- | --- | --- | --- |
@@ -666,25 +720,29 @@ Con v7 eran: normal 0,25 (9,3 falsas alarmas/h), progresivo 0,53 (4,3) y burst 0
 | v5 | Etiqueta de cuello de botella propio | 0,33* | 5,0 | Muchos "cuellos de botella" eran servicios esperando a otro |
 | v6 | 10 corridas contaminadas repetidas en limpio | 0,26* | 8,4 | v5 estaba inflado por la máquina lenta |
 | v7 | 80 corridas (2 repeticiones) | 0,32* | 9,0 | Más datos: +0,06 de F1 |
-| **v8** | **Ensamble de 3 semillas de la configuración de v7** | **0,36*** | **2,3** | El barrido no mejoró nada; el ensamble redujo las falsas alarmas a la cuarta parte |
+| v8 | Ensamble de 3 semillas de la configuración de v7 | 0,36* | 2,3 | El barrido no mejoró nada; el ensamble redujo las falsas alarmas a la cuarta parte |
+| **v9** | **+ 36 corridas de calendario aleatorio (116 en total)** | **0,31\*\*** | **5,2** | En corridas aleatorias, v8 solo anticipaba de verdad lo gradual; v9 es mejor a igual tasa de falsas alarmas (F1 0,19 contra 0,14) |
 
 \* Desde v5 cambia la etiqueta, así que su F1 no se compara directamente con el de v1–v4. La configuración de v4 con 80 corridas y la etiqueta original llega a F1 0,50, pero esa etiqueta cuenta como cuello de botella la lentitud heredada.
+\*\* Con otras corridas (incluye las aleatorias, más difíciles): no se compara con v5–v8. Ver 13.1.
 
 ---
 
 ## 14. Demo
 
-`ml/demo.py` muestra el modelo final funcionando: una tabla que se actualiza cada segundo con la CPU, la p95 y la cola de cada servicio, la probabilidad de cuello de botella en los próximos 30 s, la alarma del modelo, la de la regla CPU > 80 % y el estado real. Cuando un servicio entra en cuello de botella, dice con cuántos segundos de anticipación avisó cada método (lead time honesto). Por defecto usa **v8**; en pantalla aparece su nombre.
+`ml/demo.py` muestra el modelo final funcionando: una tabla que se actualiza cada segundo con la CPU, la p95 y la cola de cada servicio, la probabilidad de cuello de botella en los próximos 30 s, la alarma del modelo, la de la regla CPU > 80 % y el estado real. Cuando un servicio entra en cuello de botella, dice con cuántos segundos de anticipación avisó cada método (lead time honesto). Por defecto usa **v9**; en pantalla aparece su nombre.
 
 ### 14.1 Modo repetición (recomendado para presentar)
 
 No necesita Docker y siempre muestra lo mismo. Reproduce una corrida grabada con las predicciones de la **validación cruzada**: cada corrida la predijo un modelo que no la vio al entrenar.
 
 ```powershell
-python ml/demo.py --replay suave_inj_40_ticket_r2 --velocidad 2
+python ml/demo.py --replay var_inj_leve_notificaciones_r1 --velocidad 2
 ```
 
-En esa corrida `ticket` se degrada poco a poco: **v8 avisa 20 s antes** (y 22 s en el segundo tramo) y la regla de CPU no lo detecta. Más adelante llega una inyección abrupta (t = 230 s): ninguno de los dos la anticipa, lo que ilustra el límite del modelo. Para ver la misma corrida con v7: `--resultados resultados_v7`.
+En esa corrida `notificaciones` se degrada poco a poco: **v9 avisa 17 s antes** (v8: 18 s), la regla de CPU no lo detecta y no hay falsas alarmas en los otros 5 servicios. Más adelante llega una inyección abrupta (t = 220 s): ninguno de los dos la anticipa, lo que ilustra el límite del modelo. Para ver la misma corrida con v8: `--resultados resultados_v8`.
+
+(La corrida que se usaba antes, `suave_inj_40_ticket_r2`, ya no sirve de ejemplo: en la validación cruzada de v9 le tocó otro fold y su modelo no la anticipa. Es un recordatorio de que un solo ejemplo no prueba nada; las cifras de la sección 13 sí.)
 
 ### 14.2 Modo en vivo
 
@@ -692,7 +750,7 @@ Mide el sistema real con el modelo final. Las entradas se arman con las mismas f
 
 ```powershell
 docker compose restart                     # estado limpio de los servicios
-python ml/demo.py                          # terminal 1: la tabla en vivo (v8)
+python ml/demo.py                          # terminal 1: la tabla en vivo (v9)
 # terminal 2, uno de estos:
 python run_experiment.py --scenario normal --duration 360 --peak-users 100 --base-users 15 --run-id vivo_normal_mio --inject ticket:60:90:150:40 --inject ticket:220:60:150
 python run_experiment.py --scenario progresivo --duration 360 --peak-users 60 --base-users 15 --run-id vivo_progresivo_mio
@@ -701,8 +759,8 @@ python run_experiment.py --scenario burst --duration 360 --peak-users 70 --base-
 
 - Espera 60 s **con tráfico** antes de predecir: el arranque de Locust confunde al modelo en `reservaciones`.
 - En vivo el resultado varía de una corrida a otra, igual que en la evaluación. Para una presentación es más seguro el modo repetición.
-- Las falsas alarmas que se ven en pantalla son las de los 6 servicios juntos: con v8, ~14 por hora (una cada ~4 min).
-- Para comparar con v7: `python ml/demo.py --modelo data/resultados_v7/models/lstm_final.pt`.
+- Las falsas alarmas que se ven en pantalla son las de los 6 servicios juntos: con v9, ~20–30 por hora (una cada 2–3 min). Con `--umbral 0.91` bajan a la mitad, a cambio de algo menos de recall.
+- Para comparar con v8: `python ml/demo.py --modelo data/resultados_v8/modelo_ensamble.json`.
 
 Opciones: `--modelo` (un `.pt` o un ensamble `.json`), `--umbral` (corte de la alarma), `--log archivo.csv` (guarda cada segundo), `--sin-pantalla` (texto en vez de tabla), `--duracion` (segundos).
 
@@ -711,7 +769,7 @@ Opciones: `--modelo` (un `.pt` o un ensamble `.json`), `--umbral` (corte de la a
 ```powershell
 Move-Item data\vivo_normal_mio data\vivo\vivo_normal_mio
 New-Item data\vivo\vivo_normal_mio\OK
-python ml/verificar_vivo.py evaluar --modelo data/resultados_v8/modelo_ensamble.json --resultados resultados_v8
+python ml/verificar_vivo.py evaluar        # v9 por defecto
 ```
 
 El nombre debe empezar con `vivo_normal`, `vivo_progresivo` o `vivo_burst` (así se sabe el escenario). Se miden juntas todas las corridas `vivo_*` de `data/vivo/`.

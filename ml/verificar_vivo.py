@@ -2,12 +2,12 @@
 Verificacion en vivo del modelo final por escenario de carga (normal / progresivo / burst).
 
 Corre corridas NUEVAS (que el modelo nunca vio) con la demo en vivo grabando lo que muestra, las
-etiqueta con las mismas reglas del entrenamiento y mide v7 y la regla CPU > 80 % con el mismo protocolo
+etiqueta con las mismas reglas del entrenamiento y mide el modelo y la regla CPU > 80 % con el mismo protocolo
 de ml/por_escenario.py, para comparar con las cifras de la validacion cruzada.
 
 Uso (desde la raiz, con Docker y los servicios arriba; NO entrenar nada mientras corre):
   python ml/verificar_vivo.py correr     # 6 corridas, ~45 min; salta las que ya tienen OK
-  python ml/verificar_vivo.py evaluar    # consolida, etiqueta, predice y compara (modelo v7)
+  python ml/verificar_vivo.py evaluar    # consolida, etiqueta, predice y compara (modelo final v9)
   python ml/verificar_vivo.py evaluar --modelo data/resultados_v8/modelo_ensamble.json --resultados resultados_v8
 
 Todo queda en data/vivo/ (separado del dataset de entrenamiento). Se copian ahi las corridas normal_base
@@ -31,7 +31,7 @@ import datos as D  # noqa: E402
 
 PY = sys.executable
 VIVO = os.path.join(HERE, "data", "vivo")
-MODELO = os.path.join(HERE, "data", "resultados_v7", "models", "lstm_final.pt")
+MODELO = os.path.join(HERE, "data", "resultados_v9", "modelo_ensamble.json")
 # (run_id, escenario, duracion, inyecciones, usuarios pico) -- mismos parametros que la campana
 PLAN = [
     ("vivo_normal_inj_ticket", "normal", 360, ["ticket:60:90:150:40", "ticket:220:60:150"], 100),
@@ -136,7 +136,7 @@ def tramos_congelados(ds, nuevas):
     return excl, notas
 
 
-def evaluar(modelo=None, resultados="resultados_v7"):
+def evaluar(modelo=None, resultados="resultados_v9"):
     import run_campaign as RC
     RC.DATA = VIVO
     RC.consolidar()
@@ -163,9 +163,10 @@ def evaluar(modelo=None, resultados="resultados_v7"):
     mB = ds.valid & (ds.evalu == 1) & cub
     leads = {"LSTM": D.lead_times(ds, lstm), "CPU > 80 %": D.lead_times(ds, cpu)}
     filas = []
-    for e in ("normal", "progresivo", "burst"):
-        m = mB & (esc == e)
-        runs = set(ds.run[(esc == e) & cub])
+    for e in ("normal", "progresivo", "burst", "todas"):
+        en = (esc == e) | (e == "todas")
+        m = mB & en
+        runs = set(ds.run[en & cub])
         for nombre, al in (("LSTM", lstm), ("CPU > 80 %", cpu)):
             r = D.prf(ds.y, al, m)
             lt = leads[nombre]
@@ -174,7 +175,9 @@ def evaluar(modelo=None, resultados="resultados_v7"):
                           "f1": r["f1"], "precision": r["precision"], "recall": r["recall"],
                           "falsas_h": D.falsas_alarmas_hora(ds, al, m),
                           "avisados_%": 100 * lt["detectado"].mean() if len(lt) else np.nan,
-                          "anticipacion_s": lt["lead_s"].median() if len(lt) else np.nan})
+                          "anticipacion_s": lt["lead_s"].median() if len(lt) else np.nan,
+                          "graduales_avisados": "%d de %d" % (lt.loc[lt["causa"] == "inyeccion_gradual", "detectado"].sum(),
+                                                               (lt["causa"] == "inyeccion_gradual").sum())})
     vivo = pd.DataFrame(filas)
     vivo.to_csv(os.path.join(VIVO, "verificacion_%s.csv" % resultados.replace("resultados_", "")), index=False)
     cv = pd.read_csv(os.path.join(HERE, "data", resultados, "por_escenario_carga.csv"))
@@ -182,9 +185,11 @@ def evaluar(modelo=None, resultados="resultados_v7"):
     cols = ["escenario", "metodo", "episodios_vivo", "episodios_cv", "f1_vivo", "f1_cv", "falsas_h_vivo",
             "falsas_h_cv", "avisados_%_vivo", "avisados_%_cv", "anticipacion_s_vivo", "anticipacion_s_cv"]
     pd.set_option("display.width", 250)
-    print("\nVIVO (corridas nuevas, modelo final) vs CV (80 corridas de la validacion cruzada):")
+    print("\nVIVO (corridas nuevas), las 6 juntas:")
+    print(vivo[vivo["escenario"] == "todas"].drop(columns="escenario").round(3).to_string(index=False))
+    print("\nVIVO (corridas nuevas) vs CV (validacion cruzada de data/%s), por escenario:" % resultados)
     print(comp[cols].round(2).to_string(index=False))
-    print("\nEPISODIOS DE LAS CORRIDAS NUEVAS (v7):")
+    print("\nEPISODIOS DE LAS CORRIDAS NUEVAS (%s):" % (modelo or MODELO))
     lt = leads["LSTM"]
     lt = lt[lt["run"].str.startswith("vivo_")]
     print(lt[["run", "srv", "causa", "detectado", "lead_s", "alarma_previa"]].to_string(index=False))
@@ -198,8 +203,8 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("modo", choices=["correr", "evaluar"], nargs="?", default="evaluar")
-    ap.add_argument("--modelo", default=None, help="modelo (.pt) o ensamble (.json); por defecto v7")
-    ap.add_argument("--resultados", default="resultados_v7",
+    ap.add_argument("--modelo", default=None, help="modelo (.pt) o ensamble (.json); por defecto el ensamble v9")
+    ap.add_argument("--resultados", default="resultados_v9",
                     help="carpeta de data/ con por_escenario_carga.csv para comparar (la del mismo modelo)")
     a = ap.parse_args()
     if a.modo == "correr":

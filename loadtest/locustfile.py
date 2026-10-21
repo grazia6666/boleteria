@@ -16,6 +16,10 @@ PEAK_USERS = int(os.getenv("PEAK_USERS", "100"))
 BURST_START = int(os.getenv("BURST_START", "60"))
 BURST_EVERY = int(os.getenv("BURST_EVERY", "120"))
 BURST_LEN = int(os.getenv("BURST_LEN", "25"))
+# Momentos de inicio de cada rafaga, en segundos, separados por coma (ej. "70,155,290"). Si se da, reemplaza
+# al patron periodico BURST_START/BURST_EVERY: asi los picos no caen siempre en el mismo ritmo y el modelo
+# no puede aprender el calendario del experimento.
+BURST_TIMES = [float(x) for x in os.getenv("BURST_TIMES", "").split(",") if x.strip()]
 
 
 class ReservaUser(HttpUser):
@@ -46,6 +50,9 @@ class Shape(LoadTestShape):
                 users = PEAK_USERS - (PEAK_USERS - 5) * (t - up) / (DURATION - up)
             return (max(int(users), 1), 5)
         if SCENARIO == "burst":
-            in_burst = t >= BURST_START and ((t - BURST_START) % BURST_EVERY) < BURST_LEN
+            if BURST_TIMES:
+                in_burst = any(s <= t < s + BURST_LEN for s in BURST_TIMES)
+            else:
+                in_burst = t >= BURST_START and ((t - BURST_START) % BURST_EVERY) < BURST_LEN
             return (PEAK_USERS if in_burst else BASE_USERS, 50)
         raise ValueError(f"SCENARIO desconocido: {SCENARIO}")

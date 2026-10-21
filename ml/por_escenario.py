@@ -17,8 +17,8 @@ Que es cada columna (todas sobre las corridas de ese escenario):
                          tras >= 5 s apagada (lead time honesto, datos.lead_times).
   anticipacion_s         mediana de esos segundos de anticipacion, entre los episodios avisados.
   >=15s_%                % de episodios avisados con 15 s o mas de anticipacion.
-Escenario de cada grupo: normal_base, normal_inj, var_inj, suave_inj -> normal;
-burst_inj -> burst; progresivo_base -> progresivo.
+Escenario de cada grupo: normal_base, normal_inj, var_inj, suave_inj, rnd_normal -> normal;
+burst_inj, rnd_burst -> burst; progresivo_base, rnd_progresivo -> progresivo.
 Salida: data/<resultados>/por_escenario_carga.csv
 """
 import argparse
@@ -35,7 +35,8 @@ import postproceso as P  # noqa: E402
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ESCENARIO = {"normal_base": "normal", "normal_inj": "normal", "var_inj": "normal", "suave_inj": "normal",
-             "burst_inj": "burst", "progresivo_base": "progresivo"}
+             "burst_inj": "burst", "progresivo_base": "progresivo",
+             "rnd_normal": "normal", "rnd_burst": "burst", "rnd_progresivo": "progresivo"}
 
 
 def main():

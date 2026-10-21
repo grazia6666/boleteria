@@ -17,23 +17,26 @@ La demo espera a que haya trafico y junta 60 s antes de predecir ("calentando"):
 confunde al modelo. Si el trafico se corta, vuelve a esperar.
 
 Modo repeticion (sin Docker, siempre igual; ideal para presentar):
-  python ml/demo.py --replay suave_inj_40_ticket_r2 --velocidad 2
+  python ml/demo.py --replay var_inj_leve_notificaciones_r1 --velocidad 2
   Reproduce una corrida grabada con las predicciones de la VALIDACION CRUZADA (data/<resultados>/
   predicciones.csv): cada corrida la predijo un modelo que no la vio al entrenar, asi que es honesto.
-  En suave_inj_40_ticket_r2, v8 avisa ~20 s antes del cuello de botella de ticket (v7: 27 s) y la regla
-  CPU > 80 % no lo detecta. El "estado real" es la etiqueta de cuello de botella propio de esa corrida.
+  En var_inj_leve_notificaciones_r1, v9 avisa 17 s antes del cuello de botella de notificaciones
+  (degradacion gradual; v8: 18 s), la regla CPU > 80 % no lo detecta y no hay falsas alarmas en los otros
+  servicios. La segunda inyeccion (abrupta) solo se detecta al empezar. El "estado real" es la etiqueta de
+  cuello de botella propio de esa corrida.
 
-Modelo: por defecto el final, v8 = ensamble de 3 LSTM (data/resultados_v8/modelo_ensamble.json): la
-probabilidad es el promedio de los tres y el umbral 0.91. Si no existe, usa v7. Para comparar con v7:
-  python ml/demo.py --modelo data/resultados_v7/models/lstm_final.pt
-  python ml/demo.py --replay suave_inj_40_ticket_r2 --resultados resultados_v7
+Modelo: por defecto el final, v9 = ensamble de 3 LSTM entrenado con 116 corridas, incluidas las de
+calendario aleatorio (data/resultados_v9/modelo_ensamble.json): la probabilidad es el promedio de los
+tres y el umbral 0.875. Si no existe, usa v8 y luego v7. Para comparar con v8:
+  python ml/demo.py --modelo data/resultados_v8/modelo_ensamble.json
+  python ml/demo.py --replay var_inj_leve_notificaciones_r1 --resultados resultados_v8
 
 Opciones:
   --replay RUN      corrida de data/ a reproducir (en vez de medir en vivo)
   --velocidad X     en repeticion, X segundos de la corrida por segundo real (por defecto 1)
-  --resultados DIR  carpeta de data/ con predicciones.csv para --replay (por defecto resultados_v8)
-  --modelo RUTA     modelo (.pt) o ensamble (.json) (por defecto el ensamble v8)
-  --umbral X        corte de la alarma (por defecto el guardado en el modelo: 0.91 en v8, 0.83 en v7)
+  --resultados DIR  carpeta de data/ con predicciones.csv para --replay (por defecto resultados_v9)
+  --modelo RUTA     modelo (.pt) o ensamble (.json) (por defecto el ensamble v9)
+  --umbral X        corte de la alarma (por defecto el guardado en el modelo: 0.875 en v9, 0.91 en v8)
   --log RUTA.csv    guarda cada segundo: servicio, metricas, probabilidad y alarmas
   --sin-pantalla    una linea de texto por segundo en vez de la tabla (para grabar o depurar)
   --duracion S      terminar sola despues de S segundos (0 = hasta Ctrl+C)
@@ -64,10 +67,13 @@ SOSTENIDO = 3           # segundos seguidos para declarar cuello de botella (eti
 SILENCIO = 5            # segundos apagada antes de un encendido para contar anticipacion (lead honesto)
 HIST = 60               # segundos de historia guardados (ventana de 30 s + 15 s para las tendencias)
 NOMBRE = "LSTM"         # como se llama el modelo en pantalla (v7, v8...): se deduce de la ruta
-# modelo por defecto: el ensamble v8 si ya existe, si no el v7
-V8 = os.path.join(HERE, "data", "resultados_v8", "modelo_ensamble.json")
-MODELO_DEF = V8 if os.path.exists(V8) else os.path.join(HERE, "data", "resultados_v7", "models", "lstm_final.pt")
-RESULTADOS_DEF = "resultados_v8" if os.path.exists(V8) else "resultados_v7"
+# modelo por defecto: el mas nuevo que exista (ensamble v9, ensamble v8, v7)
+_CANDIDATOS = [("resultados_v9", os.path.join("resultados_v9", "modelo_ensamble.json")),
+               ("resultados_v8", os.path.join("resultados_v8", "modelo_ensamble.json")),
+               ("resultados_v7", os.path.join("resultados_v7", "models", "lstm_final.pt"))]
+RESULTADOS_DEF, MODELO_DEF = next(((r, os.path.join(HERE, "data", m)) for r, m in _CANDIDATOS
+                                   if os.path.exists(os.path.join(HERE, "data", m))),
+                                  (_CANDIDATOS[-1][0], os.path.join(HERE, "data", _CANDIDATOS[-1][1])))
 
 
 def nombre_de(texto):

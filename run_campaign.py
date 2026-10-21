@@ -88,6 +88,68 @@ def build_plan(reps, load):
                 plan.append(dict(id=f"suave_inj_{carga}_{s}_r{r}", group="suave_inj", scenario="normal",
                                  duration=360, peak=100,
                                  inject=[f"{s}:60:120:{carga}:90", f"{s}:230:90:{carga}"]))
+    plan += plan_aleatorio(reps)
+    return plan
+
+
+# ------------------------------------------------------------------ calendario aleatorio
+CARGAS = (25, 40, 90, 150, 250)
+
+
+def inyecciones_aleatorias(rng, duracion, n):
+    """n inyecciones SIN solaparse (el inyector las aplica una tras otra) con orden, servicio, tipo
+    (gradual o abrupta), intensidad, duracion y separacion al azar. La primera empieza despues de los 45 s
+    para que el control de calidad tenga su ventana sin inyeccion."""
+    out, t = [], 45 + rng.uniform(0, 40)
+    for _ in range(n):
+        dur = rng.randint(40, 100)
+        if t + dur > duracion - 20:
+            break
+        s, carga = rng.choice(SERVICIOS), rng.choice(CARGAS)
+        if rng.random() < 0.5:
+            out.append(f"{s}:{t:.0f}:{dur}:{carga}:{rng.randint(20, min(90, dur))}")   # gradual
+        else:
+            out.append(f"{s}:{t:.0f}:{dur}:{carga}")                                    # abrupta
+        t += dur + rng.randint(25, 90)
+    return out
+
+
+def rafagas_aleatorias(rng, duracion, k, largo):
+    """Inicios de k rafagas a intervalos irregulares, la primera despues de los 60 s."""
+    out, t = [], 60 + rng.uniform(0, 40)
+    while len(out) < k and t + largo < duracion - 20:
+        out.append(round(t))
+        t += largo + rng.uniform(40, 120)
+    return out
+
+
+def plan_aleatorio(reps):
+    """Grupos con CALENDARIO ALEATORIO: en las campanas anteriores el fallo gradual iba siempre primero y el
+    abrupto ~45 s despues en el mismo servicio, y los picos de burst caian cada 120 s; el modelo aprendio
+    parte de ese calendario. Aqui el orden, el momento, el servicio, el tipo, la intensidad y la duracion de
+    las inyecciones, y los momentos de las rafagas, son al azar. Cada corrida usa su propia semilla (el
+    nombre), asi el plan es reproducible y no cambia al subir --reps."""
+    import random
+    plan = []
+    for i in range(1, 24 * reps + 1):
+        rng = random.Random(f"rnd_normal-{i}")
+        dur = rng.choice((300, 360, 420))
+        plan.append(dict(id=f"rnd_normal_{i:02d}", group="rnd_normal", scenario="normal", duration=dur,
+                         peak=100, base=rng.randint(12, 20),
+                         inject=inyecciones_aleatorias(rng, dur, rng.choice((1, 2, 2, 3)))))
+    for i in range(1, 10 * reps + 1):
+        rng = random.Random(f"rnd_burst-{i}")
+        dur, largo = rng.choice((360, 420)), rng.randint(15, 35)
+        plan.append(dict(id=f"rnd_burst_{i:02d}", group="rnd_burst", scenario="burst", duration=dur,
+                         peak=rng.randint(55, 85), base=15, burst_len=largo,
+                         burst_times=rafagas_aleatorias(rng, dur, rng.choice((2, 3, 3, 4)), largo),
+                         inject=inyecciones_aleatorias(rng, dur, rng.choice((0, 1, 2)))))
+    for i in range(1, 6 * reps + 1):
+        rng = random.Random(f"rnd_progresivo-{i}")
+        dur = rng.choice((300, 360, 420))
+        plan.append(dict(id=f"rnd_progresivo_{i:02d}", group="rnd_progresivo", scenario="progresivo",
+                         duration=dur, peak=rng.randint(45, 90), base=15,
+                         inject=inyecciones_aleatorias(rng, dur, rng.choice((0, 0, 1)))))
     return plan
 
 
@@ -348,6 +410,9 @@ def main():
                    "--base-users", str(p.get("base", 15))]
             for inj in p["inject"]:
                 cmd += ["--inject", inj]
+            if p.get("burst_times"):
+                cmd += ["--burst-times", ",".join(str(x) for x in p["burst_times"]),
+                        "--burst-len", str(p["burst_len"])]
             rc = subprocess.run(cmd, cwd=HERE).returncode
             if rc == 0 and os.path.exists(os.path.join(d, "metrics.csv")):
                 c = cargar_corrida(d)[2]["cpu_por_req_pre"]
