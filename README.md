@@ -421,7 +421,7 @@ boleteria_nube/
     ├── resultados_v8/              ← modelo anterior (mismo ensamble, 80 corridas de calendario fijo)
     ├── resultados_v7/              ← un solo LSTM
     ├── externo_<modelo>_rnd.csv    ← resultados de evaluar_externo.py en las corridas aleatorias
-    ├── barrido/                    ← 40 entrenamientos del barrido y su resumen
+    ├── barrido/                    ← resumen del barrido (resumen.csv, detalle.csv) y los registros de sus 40 entrenamientos
     └── vivo/                       ← corridas de la verificación en vivo
 ```
 
