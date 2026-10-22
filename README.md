@@ -750,6 +750,7 @@ Mide el sistema real con el modelo final. Las entradas se arman con las mismas f
 
 ```powershell
 docker compose restart                     # estado limpio de los servicios
+python ml/verificar_vivo.py chequeo        # ~2 min: dice si la máquina está en condiciones de medir
 python ml/demo.py                          # terminal 1: la tabla en vivo (v9)
 # terminal 2, uno de estos:
 python run_experiment.py --scenario normal --duration 360 --peak-users 100 --base-users 15 --run-id vivo_normal_mio --inject ticket:60:90:150:40 --inject ticket:220:60:150
@@ -757,6 +758,8 @@ python run_experiment.py --scenario progresivo --duration 360 --peak-users 60 --
 python run_experiment.py --scenario burst --duration 360 --peak-users 70 --base-users 15 --run-id vivo_burst_mio --inject pago:95:75:150:30 --inject pago:215:75:150
 ```
 
+- **Haz el chequeo antes de probar.** Con la máquina ocupada (una llamada de Zoom, un juego, modo ahorro de energía) los servicios gastan el doble de CPU por petición: se saturan antes y en servicios que normalmente aguantan, y el modelo rinde mucho peor. Así salieron las 4 pruebas en vivo del 22-oct (2,1–2,5 × lo normal).
+- Usa un `--run-id` nuevo en cada prueba; si repites uno, la corrida anterior se reemplaza.
 - Espera 60 s **con tráfico** antes de predecir: el arranque de Locust confunde al modelo en `reservaciones`.
 - En vivo el resultado varía de una corrida a otra, igual que en la evaluación. Para una presentación es más seguro el modo repetición.
 - Las falsas alarmas que se ven en pantalla son las de los 6 servicios juntos: con v9, ~20–30 por hora (una cada 2–3 min). Con `--umbral 0.91` bajan a la mitad, a cambio de algo menos de recall.

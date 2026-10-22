@@ -6,6 +6,7 @@ etiqueta con las mismas reglas del entrenamiento y mide el modelo y la regla CPU
 de ml/por_escenario.py, para comparar con las cifras de la validacion cruzada.
 
 Uso (desde la raiz, con Docker y los servicios arriba; NO entrenar nada mientras corre):
+  python ml/verificar_vivo.py chequeo    # ~2 min: dice si la maquina esta en condiciones de medir
   python ml/verificar_vivo.py correr     # 6 corridas, ~45 min; salta las que ya tienen OK
   python ml/verificar_vivo.py evaluar    # consolida, etiqueta, predice y compara (modelo final v9)
   python ml/verificar_vivo.py evaluar --modelo data/resultados_v8/modelo_ensamble.json --resultados resultados_v8
@@ -49,6 +50,32 @@ def escenario(run):
         if run.startswith(p):
             return e
     return "otro"
+
+
+def chequeo(segundos=75):
+    """Antes de probar en vivo: una corrida corta de carga normal sin fallas con el mismo control de calidad
+    de la campana (CPU por request antes de inyectar vs normal_base). Si la maquina esta ocupada (Zoom,
+    juegos, modo ahorro de energia, Docker recien encendido), cada corrida sale contaminada."""
+    import run_campaign as RC
+    RC.preflight()
+    rid = "chequeo_maquina"
+    d = os.path.join(HERE, "data", rid)
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    print("Midiendo %d s de carga normal sin fallas..." % segundos, flush=True)
+    rc = subprocess.run([PY, os.path.join(HERE, "run_experiment.py"), "--scenario", "normal",
+                         "--duration", str(segundos), "--run-id", rid],
+                        cwd=HERE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+    if rc != 0 or not os.path.exists(os.path.join(d, "metrics.csv")):
+        raise SystemExit("El chequeo no termino bien (codigo %s)" % rc)
+    q = RC.cargar_corrida(d)[2]["cpu_por_req_pre"] / RC.referencia_costo()
+    shutil.rmtree(d)
+    if q <= RC.FACTOR_CONTAMINADA:
+        print("MAQUINA OK: %.2f x lo normal (limite %.1f x). Puedes correr las pruebas." % (q, RC.FACTOR_CONTAMINADA))
+    else:
+        print("MAQUINA LENTA: %.2f x lo normal (limite %.1f x). Las corridas saldrian contaminadas.\n"
+              "  Cierra Zoom, juegos y videos; conecta el cargador; modo de energia 'Mejor rendimiento';\n"
+              "  si acabas de abrir Docker, espera 2-3 min. Luego repite el chequeo." % (q, RC.FACTOR_CONTAMINADA))
 
 
 def correr():
@@ -202,12 +229,14 @@ if __name__ == "__main__":
         pass
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("modo", choices=["correr", "evaluar"], nargs="?", default="evaluar")
+    ap.add_argument("modo", choices=["chequeo", "correr", "evaluar"], nargs="?", default="evaluar")
     ap.add_argument("--modelo", default=None, help="modelo (.pt) o ensamble (.json); por defecto el ensamble v9")
     ap.add_argument("--resultados", default="resultados_v9",
                     help="carpeta de data/ con por_escenario_carga.csv para comparar (la del mismo modelo)")
     a = ap.parse_args()
-    if a.modo == "correr":
+    if a.modo == "chequeo":
+        chequeo()
+    elif a.modo == "correr":
         correr()
     else:
         evaluar(a.modelo, a.resultados)

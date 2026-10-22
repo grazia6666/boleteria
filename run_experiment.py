@@ -35,6 +35,10 @@ def main():
     run_id = args.run_id or f"{args.scenario}_{destinos}_{datetime.now():%Y%m%d_%H%M%S}"
     out = os.path.join(HERE, "data", run_id)
     os.makedirs(out, exist_ok=True)
+    # el inyector agrega filas a events.csv: si la carpeta ya existia (run_id repetido o reintento de la
+    # campana), las fallas de la corrida anterior se mezclarian con las de esta
+    if os.path.exists(os.path.join(out, "events.csv")):
+        os.remove(os.path.join(out, "events.csv"))
     print(f"== Run {run_id} ==")
 
     subprocess.run([PY, os.path.join(HERE, "loadtest", "inyector.py"), "--reset"], check=True)
