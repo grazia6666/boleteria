@@ -758,7 +758,7 @@ python run_experiment.py --scenario progresivo --duration 360 --peak-users 60 --
 python run_experiment.py --scenario burst --duration 360 --peak-users 70 --base-users 15 --run-id vivo_burst_mio --inject pago:95:75:150:30 --inject pago:215:75:150
 ```
 
-- **Haz el chequeo antes de probar.** Con la máquina ocupada (una llamada de Zoom, un juego, modo ahorro de energía) los servicios gastan el doble de CPU por petición: se saturan antes y en servicios que normalmente aguantan, y el modelo rinde mucho peor. Así salieron las 4 pruebas en vivo del 22-oct (2,1–2,5 × lo normal).
+- **Conecta el cargador y haz el chequeo antes de probar.** Sin cargador, Windows baja la velocidad de la CPU; con la máquina ocupada (una llamada de Zoom, un juego) pasa lo mismo. Los servicios gastan el doble de CPU por petición, se saturan antes y en servicios que normalmente aguantan, y el modelo rinde mucho peor. Así salieron las 4 pruebas en vivo del 22-oct, con la laptop sin cargador (2,1–2,5 × lo normal): F1 0,25 y 25 falsas alarmas/h. Repetidas el 23-oct con el cargador (0,96–1,02 ×): F1 0,39, 0,5 falsas alarmas/h, y avisó las 3 fallas graduales (28–29 s antes en `pago`) y el progresivo 17 s antes.
 - Usa un `--run-id` nuevo en cada prueba; si repites uno, la corrida anterior se reemplaza.
 - Espera 60 s **con tráfico** antes de predecir: el arranque de Locust confunde al modelo en `reservaciones`.
 - En vivo el resultado varía de una corrida a otra, igual que en la evaluación. Para una presentación es más seguro el modo repetición.
