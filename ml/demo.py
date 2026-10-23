@@ -141,8 +141,9 @@ def serie(snaps, srv):
     return df[D.FEATS].astype(float).ffill().fillna(0.0), df.get("ok", pd.Series([0] * len(df)))
 
 
-def entradas(snaps, srv):
-    """Mismas 27 columnas que D.cargar (ver datos.py), sobre la historia reciente; devuelve las ultimas W."""
+def entradas(snaps, srv, i0=0):
+    """Mismas columnas que D.cargar (ver datos.py), sobre la historia reciente; devuelve las ultimas W.
+    i0 = posicion en `snaps` del primer segundo con trafico (para las tendencias largas)."""
     f, ok = serie(snaps, srv)
     T = len(f)
     falta = (ok.fillna(0).values == 0).astype(float)
@@ -158,7 +159,8 @@ def entradas(snaps, srv):
     tend = np.column_stack([D._cambio(col[x], k) for x in D.TEND for k in (5, 15)])
     onehot = np.zeros((T, len(D.SERVICIOS)))
     onehot[:, D.SERVICIOS.index(srv)] = 1.0
-    return np.column_stack([base, tend, falta, onehot])[-D.W:]
+    lg = D.largo(f["cpu"].values, f["rps"].values, i0)
+    return np.column_stack([base, tend, falta, onehot, lg])[-D.W:]
 
 
 def cargar_uno(ruta):
@@ -183,10 +185,11 @@ def cargar_uno(ruta):
     net.load_state_dict(ck["state"])
     net.eval()
     mu, sd = np.array(ck["mu"], dtype=np.float32), np.array(ck["sd"], dtype=np.float32)
+    norm = ck.get("norm", list(range(len(mu))))   # v7-v9 estandarizan las primeras N_CONT columnas
 
-    def predecir(X):   # X: (servicios, W, 27)
+    def predecir(X):   # X: (servicios, W, columnas de datos.COLUMNAS)
         X = X.astype(np.float32).copy()
-        X[:, :, :D.N_CONT] = (X[:, :, :D.N_CONT] - mu) / sd
+        X[:, :, norm] = (X[:, :, norm] - mu) / sd
         with torch.no_grad():
             return torch.sigmoid(net(torch.from_numpy(X[:, :, ck["cols"]]))).numpy()
     return predecir, ck
@@ -365,6 +368,8 @@ def main():
     predecir, ck = cargar_modelo(a.modelo)
     global HIST, CALENTAR   # una ventana mas larga necesita mas historia (ventana + 15 s de tendencias)
     HIST = max(HIST, D.W + 20)
+    if any(n in D.LARGO for n in ck.get("feats_usadas", [])):   # tendencias de 120 s + media de 10 s
+        HIST = max(HIST, D.W + 120 + 10)
     CALENTAR = max(CALENTAR, D.W + 15)
     umbral = a.umbral if a.umbral is not None else ck["umbral"]
     umbrales = {s: v["umbral_ms"] for s, v in json.load(open(a.umbrales))["servicios"].items()}
@@ -415,7 +420,8 @@ def main():
             calentando = max(0, CALENTAR - con_trafico)
             probs, alarm_v7, alarm_cpu = {}, {}, {}
             if not calentando:
-                X = np.stack([entradas(snaps, s) for s in D.SERVICIOS])
+                i0 = len(snaps) - con_trafico   # primer segundo con trafico (negativo si quedo fuera de la historia)
+                X = np.stack([entradas(snaps, s, i0) for s in D.SERVICIOS])
                 for s, p in zip(D.SERVICIOS, predecir(X)):
                     probs[s] = float(p)
             hora = time.strftime("%H:%M:%S")

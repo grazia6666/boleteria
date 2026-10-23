@@ -10,7 +10,9 @@ Entradas del modelo en cada segundo (len(CONT) + 1 + 6 columnas; entrenar.py eli
   cpu/100, ram/256, log1p(rps), log1p(lat_media), log1p(lat_p95), log1p(cola), log1p(err_rps),
   contexto de dependencias (*_dep: maximo sobre los servicios a los que llama, directa o
   indirectamente; 0 en los servicios hoja), tendencias (d5_* / d15_*: cambio en 5 y 15 s),
-  falta, y one-hot del servicio.
+  falta, one-hot del servicio y, al final, las tendencias largas (LARGO, entrenar.py --largo): cuanto
+  crecieron el trafico y la CPU respecto a hace 60 y 120 s, y en cuantos segundos llegaria la CPU al
+  100 % al ritmo del ultimo minuto. Van al final para no mover las columnas de los modelos v7-v9.
 Una muestra = los ultimos W=30 segundos de UN servicio; etiqueta = `objetivo` en el ultimo segundo
 (y_30s: hay cuello de botella en (t, t+H];  y_inicio_30s: EMPIEZA uno en (t, t+H] y ahora no hay).
 
@@ -35,9 +37,12 @@ DEPENDE = {"reservaciones": ["usuarios", "eventos", "pago", "ticket", "notificac
 DEP = ["cpu_dep", "cola_dep", "lat_p95_dep"]
 TEND = ["cpu", "cola", "rps", "lat_p95_ms", "cpu_dep"]
 CONT = FEATS + DEP + ["d%d_%s" % (k, f) for f in TEND for k in (5, 15)]
-NF = len(CONT) + 1 + len(SERVICIOS)
-N_CONT = len(CONT)   # columnas continuas que se estandarizan
-COLUMNAS = CONT + ["falta"] + ["srv_" + s for s in SERVICIOS]
+N_CONT = len(CONT)   # columnas continuas de los modelos v7-v9 (las que estandarizan sus checkpoints)
+LARGO = ["d60_rps", "d120_rps", "d60_cpu", "d120_cpu", "t_saturar_cpu"]
+ARRANQUE = 30        # s tras el inicio del trafico que las tendencias largas no usan como referencia
+COLUMNAS = CONT + ["falta"] + ["srv_" + s for s in SERVICIOS] + LARGO
+NF = len(COLUMNAS)
+NORM = list(range(N_CONT)) + list(range(N_CONT + 1 + len(SERVICIOS), NF))   # columnas que se estandarizan
 
 
 class Datos(object):
@@ -53,6 +58,37 @@ def _cambio(v, k):
     else:
         prev[:] = v[0]
     return v - prev
+
+
+def _media(v, k=10):
+    """Media movil causal de k s (suaviza el ruido segundo a segundo)."""
+    c = np.concatenate([[0.0], np.cumsum(v)])
+    i = np.arange(1, len(v) + 1)
+    lo = np.maximum(i - k, 0)
+    return (c[i] - c[lo]) / (i - lo)
+
+
+def _cambio_largo(v, k, i0):
+    """v[t] - v[ref] con ref = max(t - k, i0 + ARRANQUE): nunca compara con el arranque del trafico
+    (Locust aun esta creando usuarios). Vale 0 antes de i0 + ARRANQUE."""
+    t = np.arange(len(v))
+    out = np.zeros(len(v))
+    ok = t >= i0 + ARRANQUE
+    ref = np.clip(np.maximum(t - k, i0 + ARRANQUE), 0, None)
+    out[ok] = v[ok] - v[ref[ok]]
+    return out
+
+
+def largo(cpu, rps, i0):
+    """Tendencias largas (columnas LARGO) de un servicio a partir de su CPU (%) y su rps por segundo;
+    i0 = indice del primer segundo con trafico. Se usa igual al entrenar y en la demo en vivo."""
+    c = _media(np.asarray(cpu, dtype=float))
+    r = np.log1p(_media(np.clip(np.asarray(rps, dtype=float), 0, None)))
+    pend = _cambio_largo(c, 60, i0) / 60.0          # puntos de CPU por segundo en el ultimo minuto
+    seg = np.where(pend > 0.05, np.clip(100.0 - c, 0, None) / np.maximum(pend, 0.05), 600.0)
+    return np.column_stack([_cambio_largo(r, 60, i0), _cambio_largo(r, 120, i0),
+                            _cambio_largo(c, 60, i0) / 100.0, _cambio_largo(c, 120, i0) / 100.0,
+                            np.log1p(np.clip(seg, 0, 600)) / np.log1p(600.0)])
 
 
 def _transformar(f):
@@ -81,7 +117,7 @@ def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=()):
         ep = ep[~ep["run_id"].isin(excluir)]
     agg = {f: "mean" for f in FEATS}
     agg.update({"scrape_ok": "min", "bn_ahora": "max", "y_30s": "max", "y_inicio_30s": "max",
-                "utilizable": "min", "evaluable": "min"})
+                "utilizable": "min", "evaluable": "min", "t_hasta_inicio": "min"})
 
     # primera pasada: rejilla de 1 s por (corrida, servicio)
     series = []
@@ -93,7 +129,7 @@ def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=()):
         series.append((run, srv, g["grupo"].iloc[0], full, a, a[FEATS].ffill().fillna(0.0)))
     por_clave = {(run, srv): f.set_index(full) for run, srv, _, full, _, f in series}
 
-    Xs, cpus, bns, ys, y30s, uts, evs, runs, srvs, grs, poss, sts, secs, eprows = ([] for _ in range(14))
+    Xs, cpus, bns, ys, y30s, uts, evs, runs, srvs, grs, poss, sts, secs, eprows, ths = ([] for _ in range(15))
     start = 0
     for run, srv, grupo, full, a, f in series:
         T = len(a)
@@ -111,7 +147,9 @@ def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=()):
         base = np.column_stack([_transformar(f), dep])
         col = {n: base[:, i] for i, n in enumerate(FEATS + DEP)}
         tend = np.column_stack([_cambio(col[x], k) for x in TEND for k in (5, 15)])
-        Xs.append(np.column_stack([base, tend, falta, onehot]))
+        lg = largo(f["cpu"].values, f["rps"].values, int(np.searchsorted(full, 0)))   # full[i0] = s 0 de la carga
+        Xs.append(np.column_stack([base, tend, falta, onehot, lg]))
+        ths.append(a["t_hasta_inicio"].values)
         cpus.append(f["cpu"].values)
         bns.append(a["bn_ahora"].ffill().fillna(0).values.astype(int))
         ys.append(a[objetivo].ffill().fillna(0).values.astype(int))
@@ -138,6 +176,7 @@ def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=()):
     ds.bn = np.concatenate(bns)
     ds.y = np.concatenate(ys)
     ds.y_30s = np.concatenate(y30s)
+    ds.t_hasta = np.concatenate(ths)   # segundos hasta el inicio del proximo episodio (nan si no hay)
     ds.objetivo = objetivo
     ds.util = np.concatenate(uts)
     ds.evalu = np.concatenate(evs)
@@ -188,11 +227,15 @@ def falsas_alarmas_hora(ds, alarma, mask):
     return ini.sum() / horas if horas else float("nan")
 
 
-def lead_times(ds, alarma, min_ventana=3, silencio=5):
+def lead_times(ds, alarma, min_ventana=3, silencio=5, sostenido=120):
     """Por episodio, lead time HONESTO: solo cuenta una alarma que se ENCIENDE dentro de los H s
     previos al inicio (en un segundo sin cuello de botella) tras >= `silencio` s apagada.
     lead = inicio - instante del encendido. Una alarma que ya estaba encendida al abrir la ventana
     no suma lead: es una alarma casi permanente, no anticipacion.
+    Aviso SOSTENIDO (`detectado_ext` / `lead_ext_s`): ademas cuenta una alarma que se encendio hasta
+    `sostenido` s antes (tras >= `silencio` s apagada, sin cuello de botella en medio) y siguio sonando
+    sin cortarse hasta el inicio; asi un aviso de 40 s no vale 0. Una alarma encendida desde antes de
+    esos `sostenido` s, o desde el episodio anterior, sigue sin contar. lead_ext = el mayor de los dos.
     Columnas de control: `alarma_previa` (encendida al abrir la ventana) y `detectado_bruto` /
     `lead_bruto_s` (criterio anterior: cualquier segundo con alarma en la ventana).
     Episodios con menos de `min_ventana` segundos libres antes de empezar se excluyen."""
@@ -207,9 +250,20 @@ def lead_times(ds, alarma, min_ventana=3, silencio=5):
             continue
         hit = js[alarma[js]]
         limpio = [j for j in hit if j - silencio >= s0 and not alarma[j - silencio:j].any()]
+        lead = float(o - limpio[0]) if limpio else np.nan
+        # aviso sostenido: se recorre hacia atras la racha de alarma que llega hasta el inicio
+        lo2 = max(o - sostenido, s0, o - int(np.floor(e.previo_libre_s)))
+        k = o - 1
+        while k >= lo2 and alarma[k]:
+            k -= 1
+        ini = k + 1
+        sost = np.nan
+        if k >= lo2 and ini < o and ini - silencio >= s0 and not alarma[ini - silencio:ini].any():
+            sost = float(o - ini)
+        lead_ext = np.nanmax([lead, sost]) if (lead == lead or sost == sost) else np.nan
         filas.append({"run": e.run, "srv": e.srv, "grupo": e.grupo, "causa": e.causa,
-                      "ventana_s": len(js), "detectado": bool(limpio),
-                      "lead_s": float(o - limpio[0]) if limpio else np.nan,
+                      "ventana_s": len(js), "detectado": bool(limpio), "lead_s": lead,
+                      "detectado_ext": bool(lead_ext == lead_ext), "lead_ext_s": lead_ext,
                       "alarma_previa": bool(alarma[lo]),
                       "detectado_bruto": bool(len(hit)),
                       "lead_bruto_s": float(o - hit[0]) if len(hit) else np.nan})
@@ -226,6 +280,9 @@ def resumen_lead(df, por):
         "lead_mediana_s": g["lead_s"].median(),
         "lead_media_s": g["lead_s"].mean(),
         "lead>=15s_%": g["lead_s"].apply(lambda s: (s >= 15).mean()) * 100,
+        "detectados_ext_%": g["detectado_ext"].mean() * 100,
+        "lead_ext_mediana_s": g["lead_ext_s"].median(),
+        "lead_ext>=30s_%": g["lead_ext_s"].apply(lambda s: (s >= 30).mean()) * 100,
         "alarma_previa_%": g["alarma_previa"].mean() * 100,
         "detectados_bruto_%": g["detectado_bruto"].mean() * 100,
         "lead_bruto_mediana_s": g["lead_bruto_s"].median(),

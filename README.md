@@ -501,6 +501,20 @@ ventana 30 s × 27 valores ─► LSTM (1 capa, 64 unidades) ─► último paso
 
 **La ventana de 60 s, otra vez, con el calendario aleatorio** (`data/resultados_v9w60/`): con las 116 corridas su F1 en validación cruzada sube a 0,42 (v9: 0,31), pero el desglose confirma el diagnóstico. En las 80 corridas de calendario fijo sigue "avisando" el **48–52 % de los fallos abruptos**, imposible sin señal previa. En las 36 corridas aleatorias, donde no hay horario que memorizar, a igual tasa de falsas alarmas **no mejora a v9** (F1 0,22 contra 0,24 con ~3,3 falsas alarmas/h; precisión 0,40 contra 0,56) y sus abruptos avisados bajan al nivel del azar (7 %). Se descartó de nuevo.
 
+**Intento de v10 para llegar a 30 s** (23-oct, `bash ml/pipeline_v10.sh`, mismos folds que v9, 3 semillas por variante). Se probaron dos ideas, que quedan en `entrenar.py` como opciones desactivadas por defecto:
+
+- `--largo`: cinco entradas de tendencia larga (`datos.LARGO`): cuánto creció el tráfico y la CPU respecto a hace 60 y 120 s, y en cuántos segundos llegaría la CPU al 100 % al ritmo del último minuto. No miran los primeros 30 s de tráfico (arranque de Locust). Van al final de las columnas para no romper los modelos v7–v9, y la demo las calcula igual que el entrenamiento (diferencia máxima 2 × 10⁻⁷).
+- `--peso-temprano 3`: triple de peso a los segundos a 20–30 s del inicio de un episodio, para aprender las primeras señales.
+
+| Corridas aleatorias, ~3 falsas alarmas/h | v9 | v10a (`--largo`) | v10b (`--largo --peso-temprano 3`) | v10c (`--peso-temprano 3`) |
+| --- | --- | --- | --- | --- |
+| Precisión | **0,57** | 0,38 | 0,37 | 0,53 |
+| F1 | **0,21** | 0,19 | 0,17 | 0,17 |
+| Progresivo avisado (4 episodios) | **4 de 4, mediana 26 s** | 1 de 4 | 2 de 4 | 4 de 4, 25 s |
+| Abruptos "avisados" en las 116 corridas (control) | 12 % | **56 %** | **52 %** | 14 % |
+
+Ninguna variante superó a v9 y **v9 sigue siendo el modelo final**. Con `--largo` el modelo vuelve a memorizar el calendario: mirando 120 s hacia atrás "ve" la falla gradual que en las corridas fijas siempre precede a la abrupta (F1 0,48 en las 116 corridas, pero peor que v9 en las aleatorias). El peso temprano no aporta: con 30 s de historia no hay más señal que aprovechar. Para que las tendencias largas sirvan hacen falta más corridas de calendario aleatorio, sin ese atajo.
+
 Pérdida: entropía cruzada binaria con `pos_weight`, porque los instantes "peligrosos" son pocos frente a los normales.
 
 ### 9.4 Cómo se evita hacer trampa (protocolo)
@@ -557,6 +571,8 @@ Se cuenta cada **servicio-segundo** como una decisión: "¿alarmo o no?".
 | **Prediction Lead Time** | segundos entre el **encendido de la alarma** y el **inicio del episodio** (máximo 30 s) | Cuánto margen tiene un operador para reaccionar |
 
 **Lead time honesto (el que se reporta):** para cada episodio se mira la ventana de hasta 30 s **anterior** a su inicio en que el servicio estaba libre. Solo cuenta una alarma que **se enciende** dentro de esa ventana **después de estar ≥ 5 s apagada**; el lead es el tiempo desde ese encendido hasta el inicio. Una alarma que ya estaba encendida no suma anticipación. Se excluyen episodios con menos de 3 s libres antes. Las columnas `*_bruto` guardan el cálculo anterior (cualquier segundo con alarma) solo para comparar.
+
+**Aviso sostenido (`detectado_ext`, `lead_ext_s`, columnas `*_sost` de `evaluar_externo.py`):** el criterio honesto no cuenta una alarma que se encendió 40 s antes, aunque haya seguido sonando hasta el problema. El aviso sostenido sí la cuenta, si se encendió como mucho 120 s antes (tras ≥ 5 s apagada, sin cuello de botella en medio) y no se cortó hasta el inicio. Una alarma encendida desde antes, o desde el episodio anterior, sigue sin contar. Con esta medida, v9 avisa el progresivo de las corridas aleatorias 4 de 4 veces con una mediana de 26 s (1 de 4 con 30 s o más); en las 116 corridas, el 67 % de los progresivos con una mediana de 25 s.
 
 **Trampa a evitar:** una alarma encendida *siempre* daba un lead de 30 s con el cálculo bruto. Así se vio en la primera versión: en propagación, 66 de 72 detecciones tenían la alarma encendida toda la ventana. Por eso el lead se cuenta de forma honesta y **nunca se reporta solo**: siempre junto a precision y falsas alarmas por hora.
 
@@ -625,7 +641,7 @@ python ml/verificar_vivo.py correr
 python ml/verificar_vivo.py evaluar        # v9; para otro modelo: --modelo ... --resultados ...
 ```
 
-Los pasos 3b a 8b, más la prueba de la ventana de 60 s, están encadenados en `bash ml/pipeline_v9.sh` (salta las corridas ya hechas; registro en `data/pipeline_v9.log`).
+Los pasos 3b a 8b, más la prueba de la ventana de 60 s, están encadenados en `bash ml/pipeline_v9.sh` (salta las corridas ya hechas; registro en `data/pipeline_v9.log`). El intento de v10 (sección 9.3) se reproduce con `bash ml/pipeline_v10.sh` (~45 min; registro en `data/pipeline_v10.log`).
 
 Cada entrenamiento tarda ~5–7 min con la máquina libre. **No entrenes mientras corre una campaña** (contamina las mediciones).
 

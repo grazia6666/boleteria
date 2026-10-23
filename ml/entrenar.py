@@ -24,6 +24,9 @@ Protocolo (nada de esto se ajusta mirando el test):
     encendida mientras el problema dura. Se predice igual sobre todas las muestras validas.
   - --contexto anade cpu/cola/lat_p95 de los servicios a los que llama (*_dep) y --tendencias
     el cambio en 5 y 15 s de cpu, cola, rps, lat_p95 (y cpu_dep con --contexto).
+  - --largo anade las tendencias largas (datos.LARGO): cambio del trafico y la CPU en 60 y 120 s y
+    segundos estimados hasta el 100 % de CPU. --peso-temprano X multiplica por X el peso de los
+    positivos a 20-30 s del inicio de un episodio, para que aprenda a avisar con las primeras senales.
   - La normalizacion usa solo estadisticas del entrenamiento.
   - Perdida BCE con pos_weight (clases desbalanceadas).
   - Cada corrida se predice exactamente una vez (cuando su fold es el de prueba); las metricas
@@ -96,6 +99,9 @@ def main():
     ap.add_argument("--objetivo", choices=["y_30s", "y_inicio_30s"], default="y_30s")
     ap.add_argument("--contexto", action="store_true", help="anadir metricas de las dependencias (*_dep)")
     ap.add_argument("--tendencias", action="store_true", help="anadir cambios en 5 y 15 s (d5_*, d15_*)")
+    ap.add_argument("--largo", action="store_true", help="anadir tendencias de 60 y 120 s y tiempo hasta saturar")
+    ap.add_argument("--peso-temprano", type=float, default=0.0,
+                    help="peso de los positivos a 20-30 s del inicio de un episodio (0 = sin cambio)")
     ap.add_argument("--excluir-contaminadas", action="store_true",
                     help="dejar fuera las corridas marcadas en data/calidad_corridas.csv")
     ap.add_argument("--salida", default="resultados", help="subcarpeta de --data para los resultados")
@@ -143,8 +149,8 @@ def main():
         if n.startswith("d") and n[1:].split("_")[0].isdigit() and not a.tendencias:
             return False
         return True
-    feats_usadas = [n for n in D.CONT if usar(n)]
-    cols = [D.CONT.index(n) for n in feats_usadas] + list(range(D.N_CONT, D.NF))
+    feats_usadas = [n for n in D.CONT if usar(n)] + (list(D.LARGO) if a.largo else [])
+    cols = [D.COLUMNAS.index(n) for n in feats_usadas] + list(range(D.N_CONT, D.N_CONT + 1 + len(D.SERVICIOS)))
     print("Entradas: %s + falta + servicio (%d columnas)" % (", ".join(feats_usadas), len(cols)))
     # con y_inicio_30s se entrena y valida solo en segundos sin cuello de botella
     apto = (ds.evalu == 1) if a.objetivo == "y_inicio_30s" else np.ones(ds.N, dtype=bool)
@@ -162,10 +168,11 @@ def main():
             return self.fc(self.drop(o[:, -1])).squeeze(-1)
 
     def normalizar(train_mask):
-        mu = ds.X[train_mask, :D.N_CONT].mean(0)
-        sd = ds.X[train_mask, :D.N_CONT].std(0) + 1e-6
+        Xtr = ds.X[train_mask][:, D.NORM]
+        mu = Xtr.mean(0)
+        sd = Xtr.std(0) + 1e-6
         Xn = ds.X.copy()
-        Xn[:, :D.N_CONT] = (Xn[:, :D.N_CONT] - mu) / sd
+        Xn[:, D.NORM] = (Xn[:, D.NORM] - mu) / sd
         return torch.from_numpy(np.ascontiguousarray(Xn[:, cols])), mu, sd
 
     def predecir(model, Xt, idx):
@@ -190,7 +197,13 @@ def main():
         ytr = torch.from_numpy(ytr_np)
         pos = float(ytr.sum())
         pw = torch.tensor([(len(ytr) - pos) / max(pos, 1.0)])
-        lf = nn.BCEWithLogitsLoss(pos_weight=pw if a.balanceo == "pos_weight" else None)
+        lf = nn.BCEWithLogitsLoss(pos_weight=pw if a.balanceo == "pos_weight" else None, reduction="none")
+        peso = np.ones(len(tr_idx), dtype=np.float32)
+        if a.peso_temprano > 0:   # positivos a 20-30 s de un inicio, sin cuello de botella todavia
+            th = ds.t_hasta[tr_idx]
+            temprano = (ytr_np == 1) & (ds.bn[tr_idx] == 0) & (th >= 20) & (th <= D.H)
+            peso[temprano] = a.peso_temprano
+        wtr = torch.from_numpy(peso)
         idx_pos, idx_neg = np.where(ytr_np == 1)[0], np.where(ytr_np == 0)[0]
         mejor, mejor_estado, sin_mejora = np.inf, None, 0
         for ep in range(a.epocas):
@@ -204,7 +217,7 @@ def main():
             for i in range(0, len(perm), a.batch):
                 sel = perm[i:i + a.batch]
                 b = torch.from_numpy(tr_idx[sel])
-                loss = lf(model(Xt[b[:, None] + offs]), ytr[sel])
+                loss = (lf(model(Xt[b[:, None] + offs]), ytr[sel]) * wtr[sel]).mean()
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
@@ -356,7 +369,7 @@ def main():
         va_idx = np.where(es_va & ds.valid & apto)[0]
         model = entrenar_modelo(Xt, tr_idx, va_idx)
         thr = float(np.median(umbrales))
-        torch.save({"state": model.state_dict(), "mu": mu.tolist(), "sd": sd.tolist(), "umbral": thr,
+        torch.save({"state": model.state_dict(), "mu": mu.tolist(), "sd": sd.tolist(), "norm": D.NORM, "umbral": thr,
                     "W": D.W, "H": D.H, "hidden": a.hidden, "capas": a.capas, "dropout": a.dropout, "columnas": D.COLUMNAS, "servicios": D.SERVICIOS,
                     "cols": cols, "feats_usadas": feats_usadas, "objetivo": a.objetivo,
                     "dependencias": D.DEPENDE},

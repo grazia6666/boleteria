@@ -17,7 +17,8 @@ Imprime y guarda en data/externo_<nombre>_<prefijo>.csv:
   - vista B global: precision, recall, F1, falsas alarmas por hora (por servicio y del sistema) y precision
     por alarma (cada encendido), junto a la regla CPU > 80 %;
   - F1 y falsas alarmas por escenario de carga;
-  - por causa del episodio: % avisado antes de empezar, anticipacion mediana y % con >= 15 s. Con el
+  - por causa del episodio: % avisado antes de empezar, anticipacion mediana y % con >= 15 s; y lo mismo
+    contando el aviso sostenido (alarma encendida hasta 120 s antes y sin cortarse, *_sost). Con el
     calendario aleatorio, los fallos abruptos ya no se pueden "adivinar": su % avisado deberia quedar cerca
     del nivel del azar (falsas alarmas/h x 30 / 3600).
 """
@@ -72,7 +73,9 @@ def resumen(ds, nombre, al, cub, sel):
     causas = []
     for c, g in lt.groupby("causa"):
         causas.append({"metodo": nombre, "causa": c, "episodios": len(g), "avisados_%": 100 * g["detectado"].mean(),
-                       "anticipacion_s": g["lead_s"].median(), ">=15s_%": 100 * (g["lead_s"] >= 15).mean()})
+                       "anticipacion_s": g["lead_s"].median(), ">=15s_%": 100 * (g["lead_s"] >= 15).mean(),
+                       "avisados_sost_%": 100 * g["detectado_ext"].mean(),
+                       "anticip_sost_s": g["lead_ext_s"].median(), ">=30s_sost_%": 100 * (g["lead_ext_s"] >= 30).mean()})
     return fila, causas
 
 
