@@ -9,11 +9,14 @@ Uso:
     - duracion_s total de la inyeccion (INCLUYE la rampa)
     - rampa_s    (opcional) segundos para subir cpu_load de 0 al valor final, 1 paso por segundo.
                  Sin rampa = escalon abrupto.
+  Cada inyeccion corre en paralelo: en servicios distintos pueden solaparse (fallas simultaneas); en el
+  mismo servicio no.
   python loadtest/inyector.py --reset     # deja todos en cpu_load=0
 """
 import argparse
 import csv
 import os
+import threading
 import time
 
 import requests
@@ -72,17 +75,23 @@ def main():
         print("Todos los servicios en cpu_load=0")
         return
 
-    plan = sorted((parse_inject(s) for s in args.inject), key=lambda p: p[1])  # sin solapar
+    plan = sorted((parse_inject(s) for s in args.inject), key=lambda p: p[1])
+    for i, a in enumerate(plan):   # en un mismo servicio, una inyeccion pisaria a la otra
+        for b in plan[i + 1:]:
+            if a[0] == b[0] and b[1] < a[1] + a[2]:
+                raise SystemExit(f"Dos inyecciones se solapan en {a[0]}: empiezan en {a[1]:.0f} y {b[1]:.0f} s")
 
     t0 = args.t0 or time.time()
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     nuevo = not os.path.exists(args.out)
+    lock = threading.Lock()
     try:
         with open(args.out, "a", newline="") as f:
             w = csv.writer(f)
             if nuevo:
                 w.writerow(["run_id", "escenario", "servicio", "t_inicio", "t_fin", "cpu_load", "rampa_s"])
-            for servicio, ini, dur, load, rampa in plan:
+
+            def inyectar(servicio, ini, dur, load, rampa):
                 time.sleep(max(0.0, t0 + ini - time.time()))
                 t_ini = time.time()
                 if rampa > 0:
@@ -97,8 +106,16 @@ def main():
                 set_load(servicio, 0, intentos=15)
                 t_fin = time.time()
                 print(f"[inyector] {servicio} OFF")
-                w.writerow([args.run_id, args.escenario, servicio, f"{t_ini:.3f}", f"{t_fin:.3f}", load, int(rampa)])
-                f.flush()
+                with lock:
+                    w.writerow([args.run_id, args.escenario, servicio, f"{t_ini:.3f}", f"{t_fin:.3f}", load, int(rampa)])
+                    f.flush()
+
+            hilos = [threading.Thread(target=inyectar, args=p, daemon=True) for p in plan]
+            for h in hilos:
+                h.start()
+            for h in hilos:
+                while h.is_alive():   # join con espera corta: deja que Ctrl+C interrumpa
+                    h.join(0.5)
     finally:
         reset_all()
 

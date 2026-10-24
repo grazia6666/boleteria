@@ -245,7 +245,7 @@ Formato: `--inject servicio:inicio:duracion:cpu_load[:rampa]`
 | `cpu_load` | Intensidad final (× 10.000 iteraciones por petición) | 150 |
 | `rampa` (opcional) | Segundos para subir de 0 a `cpu_load` (1 escalón por segundo). Sin rampa = salto directo | 40 s |
 
-Al terminar, el inyector **restablece** el servicio (`--reset`). También escribe `events.csv` con los tiempos reales.
+Al terminar, el inyector **restablece** el servicio (`--reset`). También escribe `events.csv` con los tiempos reales. Cada inyección corre en paralelo: fallas en servicios distintos pueden solaparse (fallas simultáneas; el modelo todavía no se entrenó con ellas), y dos fallas solapadas en el mismo servicio se rechazan. Si un servicio saturado tarda en responder, el inyector reintenta en vez de caerse.
 
 ### 6.3 Una corrida (`run_experiment.py`)
 

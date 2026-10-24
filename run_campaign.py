@@ -97,7 +97,7 @@ CARGAS = (25, 40, 90, 150, 250)
 
 
 def inyecciones_aleatorias(rng, duracion, n):
-    """n inyecciones SIN solaparse (el inyector las aplica una tras otra) con orden, servicio, tipo
+    """n inyecciones SIN solaparse (cada falla queda aislada en el tiempo) con orden, servicio, tipo
     (gradual o abrupta), intensidad, duracion y separacion al azar. La primera empieza despues de los 45 s
     para que el control de calidad tenga su ventana sin inyeccion."""
     out, t = [], 45 + rng.uniform(0, 40)
