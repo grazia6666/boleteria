@@ -20,23 +20,24 @@ Modo repeticion (sin Docker, siempre igual; ideal para presentar):
   python ml/demo.py --replay var_inj_leve_notificaciones_r1 --velocidad 2
   Reproduce una corrida grabada con las predicciones de la VALIDACION CRUZADA (data/<resultados>/
   predicciones.csv): cada corrida la predijo un modelo que no la vio al entrenar, asi que es honesto.
-  En var_inj_leve_notificaciones_r1, v9 avisa 17 s antes del cuello de botella de notificaciones
-  (degradacion gradual; v8: 18 s), la regla CPU > 80 % no lo detecta y no hay falsas alarmas en los otros
-  servicios. La segunda inyeccion (abrupta) solo se detecta al empezar. El "estado real" es la etiqueta de
-  cuello de botella propio de esa corrida.
+  Ejemplos con v11 (la regla CPU > 80 % no avisa antes en ninguno):
+    var_inj_leve_notificaciones_r1  falla gradual en notificaciones: avisa 19 s antes
+    rnd_progresivo_08               crecimiento progresivo: avisa 25 s antes de que se sature reservaciones
+    rnd_lenta_06                    falla lenta en ticket (sube en 2 min): avisa 11 s antes
+  El "estado real" es la etiqueta de cuello de botella propio de esa corrida.
 
-Modelo: por defecto el final, v9 = ensamble de 3 LSTM entrenado con 116 corridas, incluidas las de
-calendario aleatorio (data/resultados_v9/modelo_ensamble.json): la probabilidad es el promedio de los
-tres y el umbral 0.875. Si no existe, usa v8 y luego v7. Para comparar con v8:
-  python ml/demo.py --modelo data/resultados_v8/modelo_ensamble.json
-  python ml/demo.py --replay var_inj_leve_notificaciones_r1 --resultados resultados_v8
+Modelo: por defecto el final, v11 = ensamble de 3 LSTM entrenado con 145 corridas, 65 de ellas de
+calendario aleatorio (data/resultados_v11/modelo_ensamble.json): la probabilidad es el promedio de los
+tres y el umbral 0.883. Si no existe, usa v9, v8 y luego v7. Para comparar con v9:
+  python ml/demo.py --modelo data/resultados_v9/modelo_ensamble.json
+  python ml/demo.py --replay var_inj_leve_notificaciones_r1 --resultados resultados_v9
 
 Opciones:
   --replay RUN      corrida de data/ a reproducir (en vez de medir en vivo)
   --velocidad X     en repeticion, X segundos de la corrida por segundo real (por defecto 1)
-  --resultados DIR  carpeta de data/ con predicciones.csv para --replay (por defecto resultados_v9)
-  --modelo RUTA     modelo (.pt) o ensamble (.json) (por defecto el ensamble v9)
-  --umbral X        corte de la alarma (por defecto el guardado en el modelo: 0.875 en v9, 0.91 en v8)
+  --resultados DIR  carpeta de data/ con predicciones.csv para --replay (por defecto resultados_v11)
+  --modelo RUTA     modelo (.pt) o ensamble (.json) (por defecto el ensamble v11)
+  --umbral X        corte de la alarma (por defecto el guardado en el modelo: 0.883 en v11, 0.875 en v9)
   --log RUTA.csv    guarda cada segundo: servicio, metricas, probabilidad y alarmas
   --sin-pantalla    una linea de texto por segundo en vez de la tabla (para grabar o depurar)
   --duracion S      terminar sola despues de S segundos (0 = hasta Ctrl+C)
@@ -67,8 +68,9 @@ SOSTENIDO = 3           # segundos seguidos para declarar cuello de botella (eti
 SILENCIO = 5            # segundos apagada antes de un encendido para contar anticipacion (lead honesto)
 HIST = 60               # segundos de historia guardados (ventana de 30 s + 15 s para las tendencias)
 NOMBRE = "LSTM"         # como se llama el modelo en pantalla (v7, v8...): se deduce de la ruta
-# modelo por defecto: el mas nuevo que exista (ensamble v9, ensamble v8, v7)
-_CANDIDATOS = [("resultados_v9", os.path.join("resultados_v9", "modelo_ensamble.json")),
+# modelo por defecto: el mas nuevo que exista (ensamble v11, v9, v8, v7)
+_CANDIDATOS = [("resultados_v11", os.path.join("resultados_v11", "modelo_ensamble.json")),
+               ("resultados_v9", os.path.join("resultados_v9", "modelo_ensamble.json")),
                ("resultados_v8", os.path.join("resultados_v8", "modelo_ensamble.json")),
                ("resultados_v7", os.path.join("resultados_v7", "models", "lstm_final.pt"))]
 RESULTADOS_DEF, MODELO_DEF = next(((r, os.path.join(HERE, "data", m)) for r, m in _CANDIDATOS

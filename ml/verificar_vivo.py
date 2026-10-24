@@ -8,7 +8,7 @@ de ml/por_escenario.py, para comparar con las cifras de la validacion cruzada.
 Uso (desde la raiz, con Docker y los servicios arriba; NO entrenar nada mientras corre):
   python ml/verificar_vivo.py chequeo    # ~2 min: dice si la maquina esta en condiciones de medir
   python ml/verificar_vivo.py correr     # 6 corridas, ~45 min; salta las que ya tienen OK
-  python ml/verificar_vivo.py evaluar    # consolida, etiqueta, predice y compara (modelo final v9)
+  python ml/verificar_vivo.py evaluar    # consolida, etiqueta, predice y compara (modelo final v11)
   python ml/verificar_vivo.py evaluar --modelo data/resultados_v8/modelo_ensamble.json --resultados resultados_v8
 
 Todo queda en data/vivo/ (separado del dataset de entrenamiento). Se copian ahi las corridas normal_base
@@ -32,7 +32,7 @@ import datos as D  # noqa: E402
 
 PY = sys.executable
 VIVO = os.path.join(HERE, "data", "vivo")
-MODELO = os.path.join(HERE, "data", "resultados_v9", "modelo_ensamble.json")
+MODELO = os.path.join(HERE, "data", "resultados_v11", "modelo_ensamble.json")
 # (run_id, escenario, duracion, inyecciones, usuarios pico) -- mismos parametros que la campana
 PLAN = [
     ("vivo_normal_inj_ticket", "normal", 360, ["ticket:60:90:150:40", "ticket:220:60:150"], 100),
@@ -163,7 +163,7 @@ def tramos_congelados(ds, nuevas):
     return excl, notas
 
 
-def evaluar(modelo=None, resultados="resultados_v9"):
+def evaluar(modelo=None, resultados="resultados_v11"):
     import run_campaign as RC
     RC.DATA = VIVO
     RC.consolidar()
@@ -230,8 +230,8 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("modo", choices=["chequeo", "correr", "evaluar"], nargs="?", default="evaluar")
-    ap.add_argument("--modelo", default=None, help="modelo (.pt) o ensamble (.json); por defecto el ensamble v9")
-    ap.add_argument("--resultados", default="resultados_v9",
+    ap.add_argument("--modelo", default=None, help="modelo (.pt) o ensamble (.json); por defecto el ensamble v11")
+    ap.add_argument("--resultados", default="resultados_v11",
                     help="carpeta de data/ con por_escenario_carga.csv para comparar (la del mismo modelo)")
     a = ap.parse_args()
     if a.modo == "chequeo":

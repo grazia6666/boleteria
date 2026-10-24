@@ -29,6 +29,8 @@ def main():
     ap.add_argument("--run-id", default="")
     ap.add_argument("--burst-times", default="", help="burst: inicios de las rafagas en s, ej. 70,155,290")
     ap.add_argument("--burst-len", type=int, default=25, help="burst: duracion de cada rafaga en s")
+    ap.add_argument("--burst-ramp", type=int, default=0,
+                    help="burst: segundos que tarda cada rafaga en llegar al pico (0 = de golpe)")
     args = ap.parse_args()
 
     destinos = "-".join(sorted({i.split(":")[0] for i in args.inject})) or "sin-inyeccion"
@@ -55,7 +57,8 @@ def main():
         t0 = time.time()
         env = {**os.environ, "SCENARIO": args.scenario, "DURATION": str(args.duration),
                "BASE_USERS": str(args.base_users), "PEAK_USERS": str(args.peak_users),
-               "BURST_TIMES": args.burst_times, "BURST_LEN": str(args.burst_len)}
+               "BURST_TIMES": args.burst_times, "BURST_LEN": str(args.burst_len),
+               "BURST_RAMP": str(args.burst_ramp)}
         locust = subprocess.Popen(
             [PY, "-m", "locust", "-f", os.path.join(HERE, "loadtest", "locustfile.py"),
              "--headless", "--host", "http://localhost:8003",
@@ -73,7 +76,8 @@ def main():
         json.dump({"run_id": run_id, "scenario": args.scenario, "duration": args.duration,
                    "inject": args.inject, "base_users": args.base_users,
                    "peak_users": args.peak_users, "t0_locust": t0,
-                   "burst_times": args.burst_times, "burst_len": args.burst_len},
+                   "burst_times": args.burst_times, "burst_len": args.burst_len,
+                   "burst_ramp": args.burst_ramp},
                   open(os.path.join(out, "meta.json"), "w"), indent=2)
 
         locust.wait()

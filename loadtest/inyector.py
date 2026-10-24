@@ -22,18 +22,26 @@ PUERTOS = {"usuarios": 8001, "eventos": 8002, "reservaciones": 8003,
            "pago": 8004, "ticket": 8005, "notificaciones": 8006}
 
 
-def set_load(servicio, cpu_load):
-    r = requests.post(f"http://localhost:{PUERTOS[servicio]}/admin/load",
-                      json={"cpu_load": cpu_load}, timeout=5)
-    r.raise_for_status()
+def set_load(servicio, cpu_load, intentos=1):
+    """Fija cpu_load. Un servicio saturado puede tardar en responder: se reintenta hasta `intentos` veces y,
+    si no responde, se avisa y se sigue (un paso perdido de una rampa lo corrige el paso siguiente)."""
+    for k in range(intentos):
+        try:
+            r = requests.post(f"http://localhost:{PUERTOS[servicio]}/admin/load",
+                              json={"cpu_load": cpu_load}, timeout=5)
+            r.raise_for_status()
+            return True
+        except Exception as e:
+            error = e
+            if k + 1 < intentos:
+                time.sleep(1)
+    print(f"[inyector] {servicio} no respondio a /admin/load (cpu_load={cpu_load}): {error}")
+    return False
 
 
 def reset_all():
     for s in PUERTOS:
-        try:
-            set_load(s, 0)
-        except Exception as e:
-            print(f"[reset {s}] {e}")
+        set_load(s, 0, intentos=3)
 
 
 def parse_inject(spec):
@@ -83,10 +91,10 @@ def main():
                         set_load(servicio, max(1, round(load * k / rampa)))
                         time.sleep(max(0.0, t_ini + k - time.time()))
                 else:
-                    set_load(servicio, load)
+                    set_load(servicio, load, intentos=5)
                     print(f"[inyector] {servicio} cpu_load={load} ON (escalon)")
                 time.sleep(max(0.0, t_ini + dur - time.time()))
-                set_load(servicio, 0)
+                set_load(servicio, 0, intentos=15)
                 t_fin = time.time()
                 print(f"[inyector] {servicio} OFF")
                 w.writerow([args.run_id, args.escenario, servicio, f"{t_ini:.3f}", f"{t_fin:.3f}", load, int(rampa)])

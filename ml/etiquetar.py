@@ -39,7 +39,7 @@ import pandas as pd
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GRUPOS = ("normal_base", "normal_inj", "burst_inj", "progresivo_base", "var_inj", "suave_inj",
-          "rnd_normal", "rnd_burst", "rnd_progresivo")
+          "rnd_normal", "rnd_burst", "rnd_progresivo", "rnd_rampa", "rnd_lenta")
 
 
 def grupo_de(run_id):

@@ -150,7 +150,33 @@ def plan_aleatorio(reps):
         plan.append(dict(id=f"rnd_progresivo_{i:02d}", group="rnd_progresivo", scenario="progresivo",
                          duration=dur, peak=rng.randint(45, 90), base=15,
                          inject=inyecciones_aleatorias(rng, dur, rng.choice((0, 0, 1)))))
+    # 10 corridas por grupo, sin importar --reps
+    for i in range(1, 11):
+        # rafagas que suben en rampa: cada velocidad 2 veces, para medir anticipacion vs. velocidad de subida
+        rng = random.Random(f"rnd_rampa-{i}")
+        rampa, largo = RAMPAS[(i - 1) % len(RAMPAS)], rng.randint(20, 35)
+        dur = 540 if rampa >= 120 else 420   # las rafagas lentas necesitan mas corrida para que entren 2
+        plan.append(dict(id=f"rnd_rampa_{i:02d}", group="rnd_rampa", scenario="burst", duration=dur,
+                         peak=rng.randint(60, 85), base=15, burst_len=largo, burst_ramp=rampa,
+                         burst_times=rafagas_aleatorias(rng, dur, rng.choice((2, 3)), largo + rampa),
+                         inject=[]))
+    for i in range(1, 11):
+        # fallas lentas: el servicio tarda 2-5 min en llegar a su intensidad maxima
+        rng = random.Random(f"rnd_lenta-{i}")
+        dur, inj, t = 480, [], 45 + rng.uniform(0, 40)
+        for _ in range(rng.choice((1, 2))):
+            rampa = rng.choice((120, 180, 240, 300))
+            d = rampa + rng.randint(20, 60)
+            if t + d > dur - 20:
+                break
+            inj.append(f"{rng.choice(SERVICIOS)}:{t:.0f}:{d}:{rng.choice((60, 90, 90, 150))}:{rampa}")
+            t += d + rng.randint(30, 90)
+        plan.append(dict(id=f"rnd_lenta_{i:02d}", group="rnd_lenta", scenario="normal", duration=dur,
+                         peak=100, base=rng.randint(12, 20), inject=inj))
     return plan
+
+
+RAMPAS = (10, 20, 40, 60, 120)   # segundos de subida de las rafagas de rnd_rampa
 
 
 # ------------------------------------------------------------------ docker / salud
@@ -413,6 +439,8 @@ def main():
             if p.get("burst_times"):
                 cmd += ["--burst-times", ",".join(str(x) for x in p["burst_times"]),
                         "--burst-len", str(p["burst_len"])]
+                if p.get("burst_ramp"):
+                    cmd += ["--burst-ramp", str(p["burst_ramp"])]
             rc = subprocess.run(cmd, cwd=HERE).returncode
             if rc == 0 and os.path.exists(os.path.join(d, "metrics.csv")):
                 c = cargar_corrida(d)[2]["cpu_por_req_pre"]

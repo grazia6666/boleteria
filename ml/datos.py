@@ -109,12 +109,15 @@ def corridas_contaminadas(data_dir):
     return sorted(q[q["calidad"] == "contaminada"]["run_id"])
 
 
-def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=()):
+def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=(), excluir_grupos=()):
     d = pd.read_csv(os.path.join(data_dir, "dataset_etiquetado%s.csv" % sufijo))
     ep = pd.read_csv(os.path.join(data_dir, "episodios%s.csv" % sufijo))
     if len(excluir):
         d = d[~d["run_id"].isin(excluir)]
         ep = ep[~ep["run_id"].isin(excluir)]
+    if len(excluir_grupos):
+        d = d[~d["grupo"].isin(excluir_grupos)]
+        ep = ep[~ep["grupo"].isin(excluir_grupos)]
     agg = {f: "mean" for f in FEATS}
     agg.update({"scrape_ok": "min", "bn_ahora": "max", "y_30s": "max", "y_inicio_30s": "max",
                 "utilizable": "min", "evaluable": "min", "t_hasta_inicio": "min"})
@@ -234,7 +237,7 @@ def lead_times(ds, alarma, min_ventana=3, silencio=5, sostenido=120):
     no suma lead: es una alarma casi permanente, no anticipacion.
     Aviso SOSTENIDO (`detectado_ext` / `lead_ext_s`): ademas cuenta una alarma que se encendio hasta
     `sostenido` s antes (tras >= `silencio` s apagada, sin cuello de botella en medio) y siguio sonando
-    sin cortarse hasta el inicio; asi un aviso de 40 s no vale 0. Una alarma encendida desde antes de
+    hasta el inicio (cortes de menos de `silencio` s no la interrumpen); asi un aviso de 40 s no vale 0. Una alarma encendida desde antes de
     esos `sostenido` s, o desde el episodio anterior, sigue sin contar. lead_ext = el mayor de los dos.
     Columnas de control: `alarma_previa` (encendida al abrir la ventana) y `detectado_bruto` /
     `lead_bruto_s` (criterio anterior: cualquier segundo con alarma en la ventana).
@@ -251,15 +254,20 @@ def lead_times(ds, alarma, min_ventana=3, silencio=5, sostenido=120):
         hit = js[alarma[js]]
         limpio = [j for j in hit if j - silencio >= s0 and not alarma[j - silencio:j].any()]
         lead = float(o - limpio[0]) if limpio else np.nan
-        # aviso sostenido: se recorre hacia atras la racha de alarma que llega hasta el inicio
+        # aviso sostenido: se recorre hacia atras la racha de alarma que llega hasta el inicio. Un corte de
+        # menos de `silencio` s no la interrumpe (tampoco contaria como encendido nuevo); la racha vale si
+        # antes de ella hay >= `silencio` s apagada dentro de la ventana
         lo2 = max(o - sostenido, s0, o - int(np.floor(e.previo_libre_s)))
-        k = o - 1
-        while k >= lo2 and alarma[k]:
+        k, ini, hueco = o - 1, None, 0
+        while k >= lo2:
+            if alarma[k]:
+                ini, hueco = k, 0
+            else:
+                hueco += 1
+                if hueco >= silencio:
+                    break
             k -= 1
-        ini = k + 1
-        sost = np.nan
-        if k >= lo2 and ini < o and ini - silencio >= s0 and not alarma[ini - silencio:ini].any():
-            sost = float(o - ini)
+        sost = float(o - ini) if (ini is not None and hueco >= silencio) else np.nan
         lead_ext = np.nanmax([lead, sost]) if (lead == lead or sost == sost) else np.nan
         filas.append({"run": e.run, "srv": e.srv, "grupo": e.grupo, "causa": e.causa,
                       "ventana_s": len(js), "detectado": bool(limpio), "lead_s": lead,

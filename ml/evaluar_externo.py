@@ -87,10 +87,16 @@ def main():
     ap.add_argument("--modelo", default="")
     ap.add_argument("--resultados", default="")
     ap.add_argument("--nombre", default="modelo")
+    ap.add_argument("--nuevas-para", default="",
+                    help="carpeta de resultados (p. ej. resultados_v9): solo corridas que ese entrenamiento no uso")
     a = ap.parse_args()
 
     ds = D.cargar(a.data, a.sufijo, "y_30s")
     sel = np.array([r.startswith(a.prefijo) for r in ds.run])
+    if a.nuevas_para:
+        vistas = set(pd.read_csv(os.path.join(a.data, a.nuevas_para, "predicciones.csv"), usecols=["run"])["run"])
+        sel &= ~np.isin(ds.run, list(vistas))
+        print("Solo corridas que %s no vio al entrenar: %d" % (a.nuevas_para, len(set(ds.run[sel]))))
     if a.modelo:
         al, cub = predecir_modelo(ds, a.modelo)
     else:
@@ -105,7 +111,7 @@ def main():
     t, c = pd.DataFrame(filas), pd.DataFrame(causas)
     pd.set_option("display.width", 230)
     print("Corridas evaluadas: %d (prefijo '%s') | episodios: %d"
-          % (len(set(ds.run[sel & cub])), a.prefijo, int(ds.eps["run"].str.startswith(a.prefijo).sum())))
+          % (len(set(ds.run[sel & cub])), a.prefijo, int(ds.eps["run"].isin(set(ds.run[sel & cub])).sum())))
     print("\nVISTA B GLOBAL:")
     print(t[["metodo", "precision", "recall", "f1", "falsas_h_servicio", "falsas_h_sistema",
              "precision_por_alarma", "azar_%"]].round(3).to_string(index=False))

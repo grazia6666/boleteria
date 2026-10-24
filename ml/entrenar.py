@@ -104,6 +104,8 @@ def main():
                     help="peso de los positivos a 20-30 s del inicio de un episodio (0 = sin cambio)")
     ap.add_argument("--excluir-contaminadas", action="store_true",
                     help="dejar fuera las corridas marcadas en data/calidad_corridas.csv")
+    ap.add_argument("--excluir-grupos", default="",
+                    help="grupos de corridas que no se usan, separados por coma (p. ej. los de calendario fijo)")
     ap.add_argument("--salida", default="resultados", help="subcarpeta de --data para los resultados")
     ap.add_argument("--sin-final", action="store_true", help="no entrenar/guardar el modelo final")
     # --- opciones para el analisis de hiperparametros (los valores por defecto reproducen v7)
@@ -136,7 +138,10 @@ def main():
     excluidas = D.corridas_contaminadas(a.data) if a.excluir_contaminadas else []
     if excluidas:
         print("Excluidas por control de calidad (%d): %s" % (len(excluidas), ", ".join(excluidas)))
-    ds = D.cargar(a.data, a.sufijo, a.objetivo, excluidas)
+    grupos_fuera = [g for g in a.excluir_grupos.split(",") if g]
+    if grupos_fuera:
+        print("Grupos excluidos: %s" % ", ".join(grupos_fuera))
+    ds = D.cargar(a.data, a.sufijo, a.objetivo, excluidas, grupos_fuera)
     print("Muestras validas: %d | corridas: %d | episodios: %d | objetivo: %s"
           % (ds.valid.sum(), len(set(ds.run)), len(ds.eps), a.objetivo))
     offs = torch.arange(-D.W + 1, 1)
