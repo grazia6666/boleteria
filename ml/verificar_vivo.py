@@ -203,7 +203,9 @@ def evaluar(modelo=None, resultados="resultados_v11"):
                           "falsas_h": D.falsas_alarmas_hora(ds, al, m),
                           "avisados_%": 100 * lt["detectado"].mean() if len(lt) else np.nan,
                           "anticipacion_s": lt["lead_s"].median() if len(lt) else np.nan,
-                          "graduales_avisados": "%d de %d" % (lt.loc[lt["causa"] == "inyeccion_gradual", "detectado"].sum(),
+                          "avisados_sost_%": 100 * lt["detectado_ext"].mean() if len(lt) else np.nan,
+                          "anticip_sost_s": lt["lead_ext_s"].median() if len(lt) else np.nan,
+                          "graduales_avisados": "%d de %d" % (lt.loc[lt["causa"] == "inyeccion_gradual", "detectado_ext"].sum(),
                                                                (lt["causa"] == "inyeccion_gradual").sum())})
     vivo = pd.DataFrame(filas)
     vivo.to_csv(os.path.join(VIVO, "verificacion_%s.csv" % resultados.replace("resultados_", "")), index=False)
@@ -219,7 +221,9 @@ def evaluar(modelo=None, resultados="resultados_v11"):
     print("\nEPISODIOS DE LAS CORRIDAS NUEVAS (%s):" % (modelo or MODELO))
     lt = leads["LSTM"]
     lt = lt[lt["run"].str.startswith("vivo_")]
-    print(lt[["run", "srv", "causa", "detectado", "lead_s", "alarma_previa"]].to_string(index=False))
+    print(lt[["run", "srv", "causa", "detectado", "lead_s", "detectado_ext", "lead_ext_s"]].to_string(index=False))
+    print("(detectado/lead_s: aviso encendido dentro de los 30 s previos; *_ext: tambien cuenta el aviso sostenido,\n"
+          " encendido hasta 120 s antes y sin cortarse hasta el inicio)")
 
 
 if __name__ == "__main__":
