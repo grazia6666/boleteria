@@ -123,6 +123,29 @@ def rafagas_aleatorias(rng, duracion, k, largo):
     return out
 
 
+def fallas_simultaneas(rng, duracion, n, inicio_min, inicio_max, ventana=60):
+    """n fallas en servicios DISTINTOS que se solapan: la primera empieza entre inicio_min e inicio_max y las
+    demas hasta `ventana` s despues. Tipo al azar: gradual (60 %), lenta (15 %) o abrupta (25 %)."""
+    out, t0 = [], rng.uniform(inicio_min, inicio_max)
+    for k, s in enumerate(rng.sample(SERVICIOS, n)):
+        t = t0 + (rng.uniform(0, ventana) if k else 0)
+        u = rng.random()
+        if u < 0.60:
+            rampa = rng.choice((30, 60, 90, 150))
+            d, carga, spec = rampa + rng.randint(20, 60), rng.choice((90, 150, 250)), "gradual"
+        elif u < 0.75:
+            rampa = rng.choice((120, 180))
+            d, carga, spec = rampa + rng.randint(20, 40), rng.choice((60, 90)), "lenta"
+        else:
+            rampa, d, carga, spec = 0, rng.randint(40, 90), rng.choice((150, 250)), "abrupta"
+        d = min(d, int(duracion - 20 - t))
+        if d < 30:
+            continue
+        rampa = min(rampa, d)
+        out.append(f"{s}:{t:.0f}:{d}:{carga}" + (f":{rampa}" if rampa else ""))
+    return out
+
+
 def plan_aleatorio(reps):
     """Grupos con CALENDARIO ALEATORIO: en las campanas anteriores el fallo gradual iba siempre primero y el
     abrupto ~45 s despues en el mismo servicio, y los picos de burst caian cada 120 s; el modelo aprendio
@@ -173,6 +196,26 @@ def plan_aleatorio(reps):
             t += d + rng.randint(30, 90)
         plan.append(dict(id=f"rnd_lenta_{i:02d}", group="rnd_lenta", scenario="normal", duration=dur,
                          peak=100, base=rng.randint(12, 20), inject=inj))
+    # caidas en cadena: carga que crece o rafagas + fallas, y varias fallas a la vez (10 corridas cada uno)
+    for i in range(1, 11):
+        rng = random.Random(f"rnd_combo_prog-{i}")
+        dur = rng.choice((360, 420))
+        plan.append(dict(id=f"rnd_combo_prog_{i:02d}", group="rnd_combo_prog", scenario="progresivo",
+                         duration=dur, peak=rng.randint(55, 80), base=15,
+                         inject=fallas_simultaneas(rng, dur, rng.choice((1, 2, 2)), 60, 180)))
+    for i in range(1, 11):
+        rng = random.Random(f"rnd_combo_burst-{i}")
+        dur, largo, rampa = 420, rng.randint(20, 35), rng.choice((0, 0, 20, 40, 60))
+        plan.append(dict(id=f"rnd_combo_burst_{i:02d}", group="rnd_combo_burst", scenario="burst", duration=dur,
+                         peak=rng.randint(60, 85), base=15, burst_len=largo, burst_ramp=rampa,
+                         burst_times=rafagas_aleatorias(rng, dur, rng.choice((2, 3)), largo + rampa),
+                         inject=fallas_simultaneas(rng, dur, rng.choice((1, 2)), 60, 220)))
+    for i in range(1, 11):
+        rng = random.Random(f"rnd_simultanea-{i}")
+        dur = rng.choice((360, 420))
+        plan.append(dict(id=f"rnd_simultanea_{i:02d}", group="rnd_simultanea", scenario="normal", duration=dur,
+                         peak=100, base=rng.randint(12, 20),
+                         inject=fallas_simultaneas(rng, dur, rng.choice((2, 2, 3)), 50, 150)))
     return plan
 
 

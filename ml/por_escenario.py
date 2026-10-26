@@ -37,7 +37,8 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ESCENARIO = {"normal_base": "normal", "normal_inj": "normal", "var_inj": "normal", "suave_inj": "normal",
              "burst_inj": "burst", "progresivo_base": "progresivo",
              "rnd_normal": "normal", "rnd_burst": "burst", "rnd_progresivo": "progresivo",
-             "rnd_rampa": "burst", "rnd_lenta": "normal"}
+             "rnd_rampa": "burst", "rnd_lenta": "normal",
+             "rnd_combo_prog": "progresivo", "rnd_combo_burst": "burst", "rnd_simultanea": "normal"}
 
 
 def main():
