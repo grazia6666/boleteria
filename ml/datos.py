@@ -40,7 +40,11 @@ CONT = FEATS + DEP + ["d%d_%s" % (k, f) for f in TEND for k in (5, 15)]
 N_CONT = len(CONT)   # columnas continuas de los modelos v7-v9 (las que estandarizan sus checkpoints)
 LARGO = ["d60_rps", "d120_rps", "d60_cpu", "d120_cpu", "t_saturar_cpu"]
 ARRANQUE = 30        # s tras el inicio del trafico que las tendencias largas no usan como referencia
-COLUMNAS = CONT + ["falta"] + ["srv_" + s for s in SERVICIOS] + LARGO
+# senales que separan "estoy fallando" de "estoy esperando a otro" (opcionales: entrenar.py --propio). La etiqueta
+# de cuello de botella propio usa el tiempo propio; v12 no lo recibia como entrada.
+PROPIO = ["lat_propia", "frac_espera", "cola_llaman", "d5_lat_propia", "d15_lat_propia"]
+LLAMADORES = {s: [c for c, deps in DEPENDE.items() if s in deps] for s in SERVICIOS}
+COLUMNAS = CONT + ["falta"] + ["srv_" + s for s in SERVICIOS] + LARGO + PROPIO
 NF = len(COLUMNAS)
 NORM = list(range(N_CONT)) + list(range(N_CONT + 1 + len(SERVICIOS), NF))   # columnas que se estandarizan
 
@@ -91,6 +95,17 @@ def largo(cpu, rps, i0):
                             np.log1p(np.clip(seg, 0, 600)) / np.log1p(600.0)])
 
 
+def propio(lat_propia_ms, lat_dep_ms, lat_mean_ms, colas_llaman):
+    """Columnas PROPIO de un servicio: log del tiempo propio (latencia menos espera a sus dependencias), fraccion
+    de la latencia que es espera, log de la mayor cola de los servicios que lo llaman y cambio del tiempo propio
+    en 5 y 15 s. Se usa igual al entrenar y en la demo."""
+    lp = np.log1p(np.clip(np.asarray(lat_propia_ms, dtype=float), 0, None))
+    lm = np.asarray(lat_mean_ms, dtype=float)
+    frac = np.where(lm > 0, np.clip(np.asarray(lat_dep_ms, dtype=float) / np.maximum(lm, 1e-6), 0, 1), 0.0)
+    cola = np.log1p(np.max(np.clip(colas_llaman, 0, None), 0)) if len(colas_llaman) else np.zeros(len(lp))
+    return np.column_stack([lp, frac, cola, _cambio(lp, 5), _cambio(lp, 15)])
+
+
 def _transformar(f):
     return np.column_stack([
         f["cpu"].values / 100.0,
@@ -121,6 +136,7 @@ def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=(), excluir_grupos=())
     agg = {f: "mean" for f in FEATS}
     agg.update({"scrape_ok": "min", "bn_ahora": "max", "y_30s": "max", "y_inicio_30s": "max",
                 "utilizable": "min", "evaluable": "min", "t_hasta_inicio": "min"})
+    agg.update({c: "mean" for c in ("lat_propia_ms", "lat_dep_ms") if c in d.columns})   # los escribe etiquetar.py
 
     # primera pasada: rejilla de 1 s por (corrida, servicio)
     series = []
@@ -151,7 +167,11 @@ def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=(), excluir_grupos=())
         col = {n: base[:, i] for i, n in enumerate(FEATS + DEP)}
         tend = np.column_stack([_cambio(col[x], k) for x in TEND for k in (5, 15)])
         lg = largo(f["cpu"].values, f["rps"].values, int(np.searchsorted(full, 0)))   # full[i0] = s 0 de la carga
-        Xs.append(np.column_stack([base, tend, falta, onehot, lg]))
+        pp = a.reindex(columns=["lat_propia_ms", "lat_dep_ms"]).ffill().fillna(0.0)
+        llaman = [por_clave[(run, c)].reindex(full).ffill().fillna(0.0)["cola"].values
+                  for c in LLAMADORES[srv] if (run, c) in por_clave]
+        pr = propio(pp["lat_propia_ms"].values, pp["lat_dep_ms"].values, f["lat_mean_ms"].values, llaman)
+        Xs.append(np.column_stack([base, tend, falta, onehot, lg, pr]))
         ths.append(a["t_hasta_inicio"].values)
         cpus.append(f["cpu"].values)
         bns.append(a["bn_ahora"].ffill().fillna(0).values.astype(int))

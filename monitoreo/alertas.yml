@@ -1,0 +1,41 @@
+# Alertas (pestana Alerts de Prometheus y tabla del tablero de Grafana).
+# Las del modelo y del cuello de botella real salen de python ml/demo.py; sin la demo corriendo no se evaluan.
+groups:
+  - name: boleteria
+    rules:
+      - alert: ModeloPredice
+        expr: boleteria_alarma_modelo{job="modelo"} == 1
+        labels:
+          severidad: aviso
+        annotations:
+          resumen: "El modelo predice un cuello de botella en {{ $labels.servicio }} en los proximos 30 s"
+
+      - alert: EsperaAOtro
+        expr: boleteria_causa{job="modelo"} == 1
+        labels:
+          severidad: info
+        annotations:
+          resumen: "{{ $labels.servicio }} esta en alarma, pero espera a {{ $labels.causa }} (la causa)"
+
+      - alert: CuelloDeBotella
+        expr: boleteria_cuello_real{job="modelo"} == 1
+        labels:
+          severidad: critica
+        annotations:
+          resumen: "{{ $labels.servicio }} esta en cuello de botella"
+
+      - alert: ServicioNoResponde
+        expr: up{job="servicios"} == 0
+        for: 3s
+        labels:
+          severidad: critica
+        annotations:
+          resumen: "{{ $labels.servicio }} no responde a /metrics desde hace 3 s o mas (saturado o caido)"
+
+      - alert: DemoApagada
+        expr: up{job="modelo"} == 0
+        for: 10s
+        labels:
+          severidad: info
+        annotations:
+          resumen: "La demo (python ml/demo.py) no esta corriendo: no hay predicciones"

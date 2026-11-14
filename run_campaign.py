@@ -57,7 +57,7 @@ SERVICIOS = list(PUERTOS)
 
 
 # ------------------------------------------------------------------ plan
-def build_plan(reps, load):
+def build_plan(reps, load, lentas=10):
     plan = []
     for r in range(1, 2 * reps + 1):
         plan.append(dict(id=f"normal_base_r{r}", group="normal_base", scenario="normal",
@@ -88,7 +88,7 @@ def build_plan(reps, load):
                 plan.append(dict(id=f"suave_inj_{carga}_{s}_r{r}", group="suave_inj", scenario="normal",
                                  duration=360, peak=100,
                                  inject=[f"{s}:60:120:{carga}:90", f"{s}:230:90:{carga}"]))
-    plan += plan_aleatorio(reps)
+    plan += plan_aleatorio(reps, lentas)
     return plan
 
 
@@ -146,7 +146,7 @@ def fallas_simultaneas(rng, duracion, n, inicio_min, inicio_max, ventana=60):
     return out
 
 
-def plan_aleatorio(reps):
+def plan_aleatorio(reps, lentas=10):
     """Grupos con CALENDARIO ALEATORIO: en las campanas anteriores el fallo gradual iba siempre primero y el
     abrupto ~45 s despues en el mismo servicio, y los picos de burst caian cada 120 s; el modelo aprendio
     parte de ese calendario. Aqui el orden, el momento, el servicio, el tipo, la intensidad y la duracion de
@@ -183,8 +183,8 @@ def plan_aleatorio(reps):
                          peak=rng.randint(60, 85), base=15, burst_len=largo, burst_ramp=rampa,
                          burst_times=rafagas_aleatorias(rng, dur, rng.choice((2, 3)), largo + rampa),
                          inject=[]))
-    for i in range(1, 11):
-        # fallas lentas: el servicio tarda 2-5 min en llegar a su intensidad maxima
+    for i in range(1, lentas + 1):
+        # fallas lentas: el servicio tarda 2-5 min en llegar a su intensidad maxima (--lentas, 10 por defecto)
         rng = random.Random(f"rnd_lenta-{i}")
         dur, inj, t = 480, [], 45 + rng.uniform(0, 40)
         for _ in range(rng.choice((1, 2))):
@@ -422,6 +422,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--load", type=int, default=150, help="cpu_load final de las inyecciones")
+    ap.add_argument("--lentas", type=int, default=10, help="corridas del grupo rnd_lenta (fallas lentas)")
     ap.add_argument("--only", default="", help="grupos separados por coma")
     ap.add_argument("--cooldown", type=int, default=20, help="segundos de pausa entre corridas")
     ap.add_argument("--dry-run", action="store_true")
@@ -450,7 +451,7 @@ def main():
                     os.remove(ok)
                     print(f"  se repetira {os.path.basename(d)} (costo {c:.2f} = {c / ref:.1f} x normal_base)")
 
-    plan = build_plan(args.reps, args.load)
+    plan = build_plan(args.reps, args.load, args.lentas)
     if args.only:
         grupos = set(args.only.split(","))
         plan = [p for p in plan if p["group"] in grupos]

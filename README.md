@@ -3,10 +3,13 @@
 Proyecto P1 — *Microservice Bottleneck Prediction* (Sistemas en la Nube).
 Esta guía explica **qué medimos, por qué, cómo se genera cada dato, qué parámetros tiene cada experimento y cómo funciona cada arquitectura** (los microservicios, el pipeline de datos y el modelo). Está escrita para consultarla cuando te pierdas: cada sección es independiente.
 
+**Para instalarlo y ponerlo a funcionar, empieza por la [sección 0](#0-cómo-ejecutar-el-proyecto).**
+
 ---
 
 ## Índice
 
+0. [Cómo ejecutar el proyecto](#0-cómo-ejecutar-el-proyecto)
 1. [La idea completa en un minuto](#1-la-idea-completa-en-un-minuto)
 2. [Arquitectura 1: los 6 microservicios](#2-arquitectura-1-los-6-microservicios)
 3. [Conceptos previos (glosario corto)](#3-conceptos-previos-glosario-corto)
@@ -21,6 +24,147 @@ Esta guía explica **qué medimos, por qué, cómo se genera cada dato, qué par
 12. [Limitaciones que debes conocer](#12-limitaciones-que-debes-conocer)
 13. [Resultados del modelo final (v12)](#13-resultados-del-modelo-final-v12)
 14. [Demo](#14-demo)
+
+---
+
+## 0. Cómo ejecutar el proyecto
+
+Todos los comandos se corren en PowerShell, desde la raíz del proyecto.
+
+### 0.1 Requisitos
+
+| Necesitas | Versión probada | Para qué |
+| --- | --- | --- |
+| Docker Desktop con Compose | Docker 28.3.2, Compose 2.38.2 | Los 6 microservicios |
+| Python | 3.8.3 | Recolector, Locust, inyector, modelo y gráficas |
+| Git Bash (opcional) | | Solo para los scripts `ml/pipeline_*.sh` |
+
+El proyecto se probó en una laptop con Windows 11, Intel i7-11800H (8 núcleos) y 15,8 GB de RAM. Los contenedores usan hasta 6 CPU y 1,5 GB de RAM en total. Como todo corre en la misma máquina, **conecta el cargador y cierra los programas pesados antes de medir** (sección 6.4).
+
+### 0.2 Instalación
+
+```powershell
+git clone https://github.com/grazia6666/boleteria.git
+cd boleteria
+pip install torch==2.4.1 numpy==1.24.4 pandas==2.0.3 matplotlib==3.7.5 locust==2.25.0 docker==7.2.0 requests==2.32.4 prometheus-client==0.21.1
+docker compose up -d --build
+```
+
+Estas son las versiones con las que se probó. No uses `requirements-tools.txt`: sus versiones no instalan en Python 3.8 y no incluye `torch` ni `matplotlib`. Las dependencias de los servicios se instalan solas dentro de cada imagen (Python 3.12, `servicios/<servicio>/requirements.txt`).
+
+Después de instalar, consigue los datos (sección 0.4).
+
+### 0.3 Configuración
+
+El proyecto no usa archivos `.env`. La configuración está en `docker-compose.yml` y en los parámetros de cada comando.
+
+| Servicio | Puerto local | Variables propias |
+| --- | --- | --- |
+| `usuarios` | 8001 | |
+| `eventos` | 8002 | |
+| `reservaciones` | 8003 | `USUARIOS_URL`, `EVENTOS_URL`, `PAGO_URL` |
+| `pago` | 8004 | `TICKET_URL` |
+| `ticket` | 8005 | `NOTIFICACIONES_URL` |
+| `notificaciones` | 8006 | |
+
+Los 6 servicios escuchan en el puerto interno 8000 y comparten `SERVICE_NAME`, `BASE_DELAY_MS=5`, `CPU_LOAD=0`, `cpus: 1.0` y `mem_limit: 256m`. Si cambias `cpus`, cambia también `CPU_LIMIT` en `collector/collector.py`. El modelo se entrenó con estos límites: si los cambias, sus resultados dejan de ser comparables.
+
+| Qué se configura | Dónde | Valores usados | Detalle |
+| --- | --- | --- | --- |
+| Muestreo | `collector.py --interval` | 1 s | Sección 4.1 |
+| Carga | `run_experiment.py` | `--scenario`, `--duration`, `--base-users` (15), `--peak-users` (100) y las opciones `--burst-*` | Secciones 6.1 y 6.3 |
+| Fallas | `run_experiment.py --inject` | `servicio:inicio:duracion:cpu_load[:rampa]` | Sección 6.2 |
+| Cuello de botella real | `ml/etiquetar.py` | p95 > máx(3 × mediana, 150 ms) durante ≥ 3 s y tiempo propio > 50 ms | Sección 7.2 |
+| Modelo final | `data/resultados_v12/modelo_ensamble.json` | 3 LSTM, umbral 0,90, ventana de 30 s, horizonte de 30 s | Sección 9.3 |
+| Control de calidad | `FACTOR_CONTAMINADA` en `run_campaign.py` | Contaminada si supera 1,5 × el costo normal | Sección 6.4 |
+| Demo | `ml/demo.py` | Espera 60 s con tráfico antes de predecir; `--umbral`, `--log`, `--sin-pantalla`, `--duracion` | Sección 14 |
+
+### 0.4 Datos necesarios
+
+**El repositorio solo trae el código.** La carpeta `data/` y los modelos `*.pt` están en `.gitignore`, así que después de clonar no hay corridas ni modelo entrenado. Hay dos formas de tenerlos:
+
+1. **Copiar la carpeta `data/`** del equipo original a la raíz del proyecto (1,1 GB; los resultados y el modelo de v12 ocupan 112 MB).
+2. **Regenerarla** con la sección 11: 175 corridas válidas (18,5 h de carga, más los reinicios entre corridas) y unos 20 min de entrenamiento.
+
+El dataset tiene 107 corridas de carga normal, 26 progresivas y 42 de ráfagas. Esto necesita cada comando dentro de `data/`:
+
+| Comando | Docker | Archivos en `data/` |
+| --- | --- | --- |
+| `run_experiment.py` | Sí | Ninguno: crea `<run_id>/` |
+| `ml/graficar_corrida.py` | No | `<run_id>/metrics.csv`, `events.csv` y `meta.json` |
+| `ml/demo.py` (en vivo) | Sí | `resultados_v12/modelo_ensamble.json`, `resultados_v12/s1`, `s2` y `s3/models/lstm_final.pt`, `umbrales_propio.json`; `resultados_v12/calibracion.json` (si no está, muestra el puntaje sin calibrar) |
+| `ml/demo.py --replay <run>` | No | `resultados_v12/predicciones.csv`, `config.json` y `calibracion.json`, `<run>/metrics.csv` y `meta.json` |
+| `ml/calibrar.py` | No | `resultados_v12/predicciones.csv` y `modelo_ensamble.json`; crea `resultados_v12/calibracion.json` |
+| `ml/causa_raiz.py` | No | `resultados_v12/predicciones.csv` y `config.json`, `dataset_etiquetado_propio.csv`, `episodios_propio.csv` |
+| `ml/evidencia_vivo.py --run <run>` | No | Lo que grabó la corrida, `normal_base_r1` a `r4`, el modelo v12, `resultados_v12/predicciones.csv` y el `meta.json` de las 175 corridas |
+| `ml/evidencia_lead.py --run <run>` | No | `resultados_v12/predicciones.csv` y `config.json`, `<run>/metrics.csv` y `meta.json`, `episodios_propio.csv`, `umbrales_propio.json`, `dataset_etiquetado_propio.csv` |
+| `ml/verificar_vivo.py chequeo` | Sí | `normal_base_r1` a `r4` |
+| `ml/verificar_vivo.py evaluar` | No | `vivo/`, el modelo v12, `resultados_v12/por_escenario_carga.csv` |
+| `ml/etiquetar.py` | No | `dataset_metrics.csv`, `dataset_edges.csv` |
+| `ml/baseline.py`, `ml/entrenar.py` | No | `dataset_etiquetado_propio.csv`, `episodios_propio.csv` |
+
+Los archivos de cada corrida se explican en la sección 5.
+
+### 0.5 Ejecución
+
+**1. Levantar los servicios y comprobar la máquina**
+
+```powershell
+docker compose up -d
+docker compose ps                        # los 6 deben decir Up
+python ml/verificar_vivo.py chequeo      # ~2 min: dice MAQUINA OK o MAQUINA LENTA
+```
+
+**2. Ver el modelo sin Docker (modo repetición).** Reproduce una corrida grabada y siempre muestra lo mismo:
+
+```powershell
+python ml/demo.py --replay rnd_lenta_06 --velocidad 2        # carga normal, falla lenta en ticket
+python ml/demo.py --replay rnd_progresivo_12 --velocidad 2   # carga progresiva
+python ml/demo.py --replay rnd_rampa_04 --velocidad 2        # ráfagas que suben en 60 s
+```
+
+**3. Correr un experimento en vivo.** Abre la demo en una terminal:
+
+```powershell
+docker compose restart      # estado limpio de los servicios
+python ml/demo.py
+```
+
+Y en otra terminal corre uno de estos:
+
+```powershell
+python run_experiment.py --scenario normal --duration 300 --run-id demo_normal_1 --inject usuarios:70:170:90:90
+python run_experiment.py --scenario progresivo --duration 360 --peak-users 60 --run-id demo_progresivo_1 --inject notificaciones:100:90:90:60
+python run_experiment.py --scenario burst --duration 420 --peak-users 70 --burst-times 74,221 --burst-len 34 --burst-ramp 60 --run-id demo_burst_1
+```
+
+Usa un `--run-id` nuevo en cada corrida, porque si repites uno se reemplaza la anterior. Espera a que salga `Listo -> ...` antes de graficar.
+
+**4. Graficar una corrida**
+
+```powershell
+python ml/evidencia_vivo.py --run demo_normal_1          # corrida nueva: predicción, inicio real y Lead Time por servicio
+python ml/evidencia_lead.py --run rnd_lenta_06           # corrida del entrenamiento (validación cruzada)
+python ml/graficar_corrida.py data/demo_normal_1 --log   # solo métricas, sin el modelo
+```
+
+Las dos primeras generan un `.png` y un `.csv`, y la tercera un `grafica.png` dentro de la carpeta de la corrida. La sección 14.4 explica cómo leerlas.
+
+**5. Apagar**
+
+```powershell
+docker compose stop
+```
+
+**Problemas comunes**
+
+| Qué pasa | Causa | Solución |
+| --- | --- | --- |
+| Error al conectar con Docker | Docker Desktop está cerrado | Ábrelo y espera 2 o 3 min |
+| `MAQUINA LENTA` en el chequeo | Sin cargador o con programas pesados abiertos | Conecta el cargador, cierra programas y repite el chequeo |
+| `No such file` o `FileNotFoundError` dentro de `data/` | Faltan los datos | Sección 0.4 |
+| `La corrida ... no esta en .../predicciones.csv` | Es una corrida nueva, y `--replay` y `evidencia_lead.py` solo sirven para las del entrenamiento | Usa `ml/evidencia_vivo.py` |
+| Un servicio sigue lento tras cerrar una corrida a la fuerza | La falla quedó activa | `python loadtest/inyector.py --reset` |
 
 ---
 
@@ -420,6 +564,8 @@ boleteria_nube/
 │   └── inyector.py                 ← provoca cuellos de botella
 ├── run_experiment.py               ← UNA corrida (recolector + locust + inyector)
 ├── run_campaign.py                 ← TODAS las corridas + consolidación
+├── docs/img/                       ← figuras que muestra esta guía
+├── monitoreo/                      ← opcional: Prometheus + Grafana con el tablero en vivo (monitoreo/README.md)
 ├── ml/
 │   ├── graficar_corrida.py         ← gráfica de una corrida (4 paneles)
 │   ├── etiquetar.py                ← pone etiquetas y episodios
@@ -427,18 +573,25 @@ boleteria_nube/
 │   ├── baseline.py                 ← umbral CPU>80 % y persistencia
 │   ├── entrenar.py                 ← LSTM con validación cruzada
 │   ├── postproceso.py              ← suavizado e híbrido de alarmas, sin reentrenar
+│   ├── causa_raiz.py               ← pasa la alarma del servicio que espera al causante (sin reentrenar)
+│   ├── calibrar.py                 ← convierte el puntaje del modelo en probabilidad real (calibracion.json)
+│   ├── graficas_mejoras.py         ← figuras de causa raíz y calibración (docs/img/)
 │   ├── por_escenario.py            ← métricas por escenario de carga (normal / progresivo / burst)
 │   ├── barrido.py                  ← barrido de hiperparámetros y balanceo (varias semillas)
 │   ├── ensamble.py                 ← ensamble de semillas: evalúa y arma el modelo final (v8, v9)
 │   ├── evaluar_externo.py          ← mide un modelo solo en un grupo de corridas (p. ej. las rnd_*)
 │   ├── pipeline_v9.sh              ← campaña aleatoria → etiquetado → v8 en rnd_* → v9 → tablas
+│   ├── pipeline_v14.sh             ← v12 reentrenado y v14 (señales de tiempo propio); descartado (13.8)
+│   ├── entrenar_conjunto.py        ← v13: un LSTM que ve los 6 servicios a la vez; descartado (13.8)
 │   ├── demo.py                     ← demo en vivo y en modo repetición
+│   ├── evidencia_lead.py           ← gráfica de 3 servicios con predicción, inicio real y Prediction Lead Time
+│   ├── evidencia_vivo.py           ← la misma evidencia para una corrida nueva, con el modelo final
 │   └── verificar_vivo.py           ← corridas nuevas en vivo + evaluación con el mismo protocolo
 └── data/                           ← (no se sube a git: se regenera con los scripts)
     ├── <run_id>/                   ← una carpeta por corrida
     ├── dataset_metrics.csv, dataset_edges.csv, resumen_corridas.csv, calidad_corridas.csv
     ├── dataset_etiquetado[_propio].csv, episodios[_propio].csv, umbrales[_propio].json
-    ├── resultados_v12/             ← modelo final: s1, s2, s3 + modelo_ensamble.json + predicciones
+    ├── resultados_v12/             ← modelo final: s1, s2, s3 + modelo_ensamble.json + predicciones + calibracion.json
     ├── resultados_v11/             ← modelo anterior (145 corridas)
     ├── resultados_v9/              ← modelo anterior (116 corridas)
     ├── resultados_v8/              ← modelo anterior (mismo ensamble, 80 corridas de calendario fijo)
@@ -611,11 +764,15 @@ Se cuenta cada **servicio-segundo** como una decisión: "¿alarmo o no?".
 
 **Post-proceso (`ml/postproceso.py`):** sin reentrenar, mide el efecto de **suavizar** la alarma (que suene solo si el modelo dijo "sí" en 3 de los últimos 5 s) y del **híbrido** "LSTM o CPU > 80 %". El suavizado reduce las falsas alarmas a la mitad pero retrasa el aviso; el híbrido no aporta.
 
+**Causa raíz (`ml/causa_raiz.py`, en uso desde el 11-nov):** si un servicio y otro al que llama están en alarma (en los últimos 5 s), la alarma del que llama pasa al causante y no cuenta como aviso propio. Se mide con una métrica más: **cadenas avisadas en el servicio o en su causa** (el servicio, o alguno de los que llama, tuvo alarma en los 30 s previos al episodio). Resultados en la sección 13.7.
+
+**Probabilidad calibrada (`ml/calibrar.py`):** el puntaje del ensamble no es una probabilidad (cuando marca 0,75, el problema llega 1 de cada 4 veces). Una regresión isotónica ajustada sobre las predicciones de la validación cruzada lo convierte en una probabilidad que sí se cumple. Es una curva creciente, así que no cambia qué alarmas suenan: el umbral 0,90 del puntaje equivale a **0,51** calibrado.
+
 ---
 
 ## 11. Comandos en orden
 
-Desde la raíz del proyecto (con Docker Desktop abierto):
+Estos pasos **regeneran todo el dataset y el modelo v12 desde cero**. Para solo ejecutar el sistema, usa la sección 0. Desde la raíz del proyecto, con Docker Desktop abierto, el cargador conectado y la laptop libre:
 
 ```powershell
 # 0. Levantar los servicios (primera vez o tras cambiar código)
@@ -627,46 +784,52 @@ python run_campaign.py --dry-run
 # 2. Prueba corta de un grupo
 python run_campaign.py --only normal_base
 
-# 3. Campaña completa + consolidar (80 corridas, ≈ 9,5 h; se puede cortar con Ctrl+C y reanudar)
-python run_campaign.py --reps 2
-python run_campaign.py --reps 2 --repetir-contaminadas   # si alguna no pasó el control de calidad
+# 3. Campaña de calendario fijo (80 corridas; se puede cortar con Ctrl+C y reanudar)
+python run_campaign.py --reps 2 --only normal_base,normal_inj,burst_inj,progresivo_base,var_inj,suave_inj
 
-# 4. (opcional) Ver una corrida
+# 4. Campañas de calendario aleatorio y caídas en cadena
+python run_campaign.py --only rnd_normal,rnd_burst,rnd_progresivo
+python run_campaign.py --reps 2 --only rnd_progresivo,rnd_rampa,rnd_lenta
+python run_campaign.py --only rnd_combo_prog,rnd_combo_burst,rnd_simultanea
+
+# 5. Si alguna no pasó el control de calidad, repite su comando con --repetir-contaminadas
+python run_campaign.py --only rnd_normal,rnd_burst,rnd_progresivo --repetir-contaminadas
+
+# 6. (opcional) Ver una corrida
 python ml/graficar_corrida.py data/<run_id> --smooth 3
 
-# 5. Etiquetar (original y de cuello de botella propio)
-python ml/etiquetar.py
+# 7. Etiquetar (cuello de botella propio)
 python ml/etiquetar.py --solo-propio --sufijo _propio
 
-# 6. Baseline
+# 8. Baseline
 python ml/baseline.py --sufijo _propio
 
-# 3b. Campaña con calendario aleatorio (40 corridas, ≈ 4,9 h)
-python run_campaign.py --only rnd_normal,rnd_burst,rnd_progresivo
+# 9. Modelo final v12: 3 LSTM con distinta semilla (mismos folds) y su ensamble
+python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 1 --salida resultados_v12/s1
+python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 2 --salida resultados_v12/s2
+python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 3 --salida resultados_v12/s3
+python ml/ensamble.py --dirs resultados_v12/s1 resultados_v12/s2 resultados_v12/s3 --salida resultados_v12 --salida-csv resultados_v12/ensamble_metricas.csv
 
-# 7. Modelo final v9: 3 LSTM con la configuración de v7 y distinta semilla (mismos folds), y su ensamble
-python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 1 --salida resultados_v9/s1
-python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 2 --salida resultados_v9/s2
-python ml/entrenar.py --sufijo _propio --contexto --tendencias --seed-folds 42 --seed 3 --salida resultados_v9/s3
-python ml/ensamble.py --dirs resultados_v9/s1 resultados_v9/s2 resultados_v9/s3 --salida resultados_v9
+# 10. Tablas del modelo final: corridas aleatorias y por escenario de carga
+python ml/evaluar_externo.py --resultados resultados_v12 --nombre v12
+python ml/por_escenario.py --resultados resultados_v12
 
-# 8. Tablas del modelo final: post-proceso y por escenario de carga
-python ml/postproceso.py --sufijo _propio --resultados resultados_v9
-python ml/por_escenario.py --resultados resultados_v9
-
-# 8b. Solo las corridas de calendario aleatorio: v8 (que nunca las vio) y v9 (validación cruzada)
-python ml/evaluar_externo.py --modelo data/resultados_v8/modelo_ensamble.json --nombre v8
-python ml/evaluar_externo.py --resultados resultados_v9 --nombre v9
-
-# 9. (opcional) Barrido de hiperparámetros, ~4 h con la máquina libre
+# 11. (opcional) Barrido de hiperparámetros, ~4 h con la máquina libre
 python ml/barrido.py
 
-# 10. (opcional) Verificación en vivo: 6 corridas nuevas (~45 min, Docker arriba) y su evaluación
+# 12. (opcional) Verificación en vivo: 6 corridas (~45 min, Docker arriba) y su evaluación
 python ml/verificar_vivo.py correr
 python ml/verificar_vivo.py evaluar        # v12; para otro modelo: --modelo ... --resultados ...
+
+# 13. Ajustes sin reentrenar que usan la demo y las gráficas (segundos)
+python ml/calibrar.py                      # crea resultados_v12/calibracion.json
+python ml/causa_raiz.py                    # mide la regla de causa raíz (resultados_v12/causa_raiz.csv)
+python ml/graficas_mejoras.py              # figuras de la sección 13.7 (y su copia en docs/img/)
 ```
 
-Los pasos 3b a 8b, más la prueba de la ventana de 60 s, están encadenados en `bash ml/pipeline_v9.sh` (salta las corridas ya hechas; registro en `data/pipeline_v9.log`). El intento de v10 (sección 9.3) se reproduce con `bash ml/pipeline_v10.sh` (~45 min; registro en `data/pipeline_v10.log`). El modelo final v11 se reproduce con `bash ml/pipeline_v11.sh`: campaña de 29 corridas aleatorias (~4 h, Docker arriba, **cargador conectado**, sin usar la laptop), etiquetado, prueba de v9 en las corridas nuevas (`evaluar_externo.py --nuevas-para resultados_v9`) y 9 entrenamientos (~50 min); registro en `data/pipeline_v11.log`. El modelo final v12 se reproduce con `bash ml/pipeline_v12.sh`: 30 corridas de caídas en cadena (~4 h, mismas condiciones), etiquetado, prueba de v11 en las corridas nuevas y 3 entrenamientos (~20 min); registro en `data/pipeline_v12.log`.
+El plan completo tiene 176 corridas. El dataset usa 175, porque `rnd_normal_10` no quedó con marca `OK`.
+
+Las últimas etapas también están encadenadas en scripts para Git Bash, que saltan las corridas ya hechas y guardan su registro en `data/pipeline_v*.log`. `bash ml/pipeline_v12.sh` corre las 30 corridas de caídas en cadena (~4 h), el etiquetado, la prueba de v11 en las corridas nuevas y los 3 entrenamientos (~20 min). `bash ml/pipeline_v11.sh` corre 29 corridas aleatorias (~4 h), el etiquetado, la prueba de v9 en las corridas nuevas y 9 entrenamientos (~50 min). `ml/pipeline_v9.sh` y `ml/pipeline_v10.sh` reproducen los modelos anteriores.
 
 Cada entrenamiento tarda ~5–7 min con la máquina libre. **No entrenes mientras corre una campaña** (contamina las mediciones).
 
@@ -680,9 +843,9 @@ Para una variante de etiquetado más permisiva, sin pisar los archivos: `python 
 - **Lo abrupto no se puede anticipar:** sin señal previa en las métricas, ningún modelo puede avisar a tiempo. Una vez iniciado, tanto el LSTM como la regla de CPU lo detectan en ~1 s.
 - **El calendario del experimento se puede memorizar:** en las 80 corridas de calendario fijo el fallo abrupto llega siempre después del gradual en el mismo servicio y los picos de burst caen cada 120 s. Con las 36 corridas de calendario aleatorio (sección 6.6) se midió cuánto de eso había: v8, en corridas que nunca vio, avisó solo el 7 % de los abruptos y el 4 % de los picos, al nivel del azar. **Las cifras honestas del proyecto son las de esas corridas (sección 13.1)**, más bajas que las de la validación cruzada. En las corridas de calendario fijo, las cifras de cualquier modelo siguen algo infladas por ese patrón.
 - **Recall bajo en corridas realistas:** con calendario aleatorio v11 detecta ~25 % de los segundos de riesgo. Lo que sí anticipa de forma fiable es lo que se arma de a poco (fallas graduales y lentas, crecimiento progresivo, ráfagas en rampa); los fallos abruptos, la propagación y las ráfagas instantáneas solo se detectan cuando ya empezaron.
-- **Caídas en cadena:** cuando un servicio se atasca esperando a otro que falla, v12 lo avisa en ese servicio solo el 23 % de las veces; contando la alarma del servicio del que depende, el 56 %. Es el punto débil que queda (sección 13.0).
+- **Caídas en cadena:** cuando un servicio se atasca esperando a otro que falla, v12 lo avisa en ese servicio solo el 23 % de las veces; contando la alarma del servicio del que depende, el 56 %. Es el punto débil que queda (sección 13.0). Desde el 11-nov, la regla de causa raíz deja ese aviso solo en el causante (13.7). Dos modelos pensados para mejorarlo, v13 y v14, no lo lograron (13.8).
 - **30 s solo en parte de los casos:** el 20–30 % de los progresivos y el ~10 % de las fallas lentas y de las ráfagas en rampa se avisan con 30 s o más. La anticipación está limitada por lo rápido que se arma el problema (sección 13.2).
-- **Falsas alarmas:** 2,0 por hora **por servicio** con v12 en las corridas aleatorias (1,5 sin las de caídas en cadena) y 3,0 en la validación cruzada, ~12–18 por hora en el sistema completo (6 servicios). Bajaron mucho desde v7 (~54 en el sistema), pero siguen siendo la principal debilidad para un uso real.
+- **Falsas alarmas:** 2,0 por hora **por servicio** con v12 en las corridas aleatorias (1,5 sin las de caídas en cadena) y 3,0 en la validación cruzada, ~12–18 por hora en el sistema completo (6 servicios). Con la regla de causa raíz bajan a 2,3 en la validación cruzada (13.7). Bajaron mucho desde v7 (~54 en el sistema), pero siguen siendo la principal debilidad para un uso real.
 - **La máquina importa:** con la laptop sin cargador o con otro programa pesado, cada petición cuesta el doble y el modelo parece mucho peor (sección 14.2). Antes de medir, `python ml/verificar_vivo.py chequeo`.
 - **Faltan 4 corridas aleatorias** (`rnd_normal_10`, `rnd_progresivo_02` a `04`) que salieron contaminadas; se pueden completar otro día con `python run_campaign.py --only rnd_normal,rnd_burst,rnd_progresivo --repetir-contaminadas` si el control de calidad vuelve a dar ~1 ×.
 - **La etiqueta sale de la latencia**, que además es una entrada del modelo. Sin las entradas de latencia el LSTM conserva ~85 % de su F1, así que no se limita a leer la etiqueta.
@@ -697,6 +860,8 @@ Para una variante de etiquetado más permisiva, sin pisar los archivos: `python 
 ## 13. Resultados del modelo final (v12)
 
 **Modelo v12** (26-oct): el mismo ensamble de 3 LSTM que v9 y v11 (contexto de dependencias, tendencias de 5 y 15 s, etiqueta de cuello de botella propio, ventana de 30 s, semillas 1–3), entrenado con **175 corridas, 95 de calendario aleatorio**: a las 145 de v11 se sumaron 30 de **caídas en cadena** (sección 6.6). Umbral **0,90** (mediana de los folds). Archivo: `data/resultados_v12/modelo_ensamble.json`. Se reproduce con `bash ml/pipeline_v12.sh`. La demo y `verificar_vivo.py` lo usan por defecto.
+
+Desde el 11-nov, la demo y las gráficas aplican dos ajustes sin reentrenar: la regla de **causa raíz** (23 % menos falsas alarmas, los mismos avisos) y la **probabilidad calibrada** (sección 13.7). v13 y v14, que intentaban mejorar el modelo, se descartaron (13.8).
 
 ### 13.0 Caídas en cadena: v11 contra v12
 
@@ -862,10 +1027,71 @@ Se reproduce con `python ml/por_escenario.py --resultados resultados_v9`.
 | v10 (descartado) | Tendencias de 60–120 s y/o más peso a los avisos tempranos | — | — | Con calendario fijo, mirar 120 s atrás vuelve a memorizar el horario (sección 9.3) |
 | v11 | + 29 corridas aleatorias: más progresivo, ráfagas en rampa y fallas lentas (145 en total) | 0,36\*\*\* | 2,4 | En las 65 aleatorias supera a v9: F1 0,38 contra 0,34 con menos falsas alarmas y más avisos de 30 s (13.1) |
 | **v12** | **+ 30 corridas de caídas en cadena: progresivo + fallas, burst + fallas y fallas simultáneas (175 en total)** | **0,35\*\*\*** | **3,0** | En las 30 de caídas en cadena supera a v11 (F1 0,32 contra 0,28); en las 95 aleatorias, F1 0,35 contra 0,33 (13.0) |
+| v13 (descartado) | Un LSTM que ve los 6 servicios a la vez | — | — | Peor en todo: a 3 falsas alarmas/h, F1 0,28 contra 0,36 de v12 (13.8) |
+| v14 (descartado) | + señales de tiempo propio y 29 corridas más (204 en total) | 0,42\*\*\*\* | 2,4 | Empata con v12 reentrenado con las mismas corridas (0,41) y avisa menos fallas graduales: 67 % contra 74 % (13.8) |
+| **v12 + causa raíz** | **Sin reentrenar: la alarma del servicio que espera pasa al causante; probabilidad calibrada** | **0,31\*\*\*** | **2,3** | 23 % menos falsas alarmas y los mismos avisos; el F1 baja porque el aviso de la cadena lo da el causante (13.7) |
 
 \* Desde v5 cambia la etiqueta, así que su F1 no se compara directamente con el de v1–v4. La configuración de v4 con 80 corridas y la etiqueta original llega a F1 0,50, pero esa etiqueta cuenta como cuello de botella la lentitud heredada.
 \*\* Con otras corridas (incluye las aleatorias, más difíciles): no se compara con v5–v8. Ver 13.4.
-\*\*\* Validación cruzada de las 145 corridas; la comparación justa con v9 es la de las 65 aleatorias (13.1).
+\*\*\* Validación cruzada de las 145 corridas (v11) o de las 175 (v12); la comparación justa con v9 es la de las 65 aleatorias (13.1).
+\*\*\*\* Validación cruzada de las 204 corridas; no se compara directamente con v12 (las 29 corridas nuevas son de las fáciles).
+
+### 13.7 Mejoras sin reentrenar: causa raíz y probabilidad calibrada (11-nov)
+
+El modelo v12 no cambia: se usan los mismos 3 LSTM y el mismo umbral. Cambia qué se hace con sus alarmas y cómo se muestra su puntaje. La demo (`ml/demo.py`) y las gráficas (`ml/evidencia_vivo.py`, `ml/evidencia_lead.py`) aplican los dos ajustes.
+
+**Causa raíz** (`ml/causa_raiz.py`). La mayoría de las falsas alarmas de v12 eran servicios que llaman a otro que se estaba cayendo, sobre todo `reservaciones`. Regla: si un servicio está en alarma y alguno de los que llama tuvo alarma en los últimos 5 s, el aviso queda en el causante. Si ese, a su vez, espera a otro, se sigue la cadena (`reservaciones` → `pago` → `ticket`: la causa es `ticket`). En la demo se ve como `↪ <causa>` en vez de ALARMA, y en las gráficas como una franja morada "espera a <causa>".
+
+Validación cruzada de las 175 corridas (cada corrida la predijo un modelo que no la vio):
+
+| | Precisión | Recall | F1 | Falsas alarmas/h | Fallas graduales avisadas | Episodios naturales avisados | Cadenas avisadas (servicio o su causa) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| CPU > 80 % | 0,49 | 0,11 | 0,18 | 3,1 | 41 % | 41 % | 52 % |
+| v12 | 0,71 | 0,23 | 0,35 | 3,0 | 75 % | 59 % | 60 % |
+| **v12 + causa raíz** | **0,73** | 0,19 | 0,31 | **2,3** | 74 % | 59 % | **60 %** |
+| v12 + suavizado 3 de 5 | 0,63 | 0,21 | 0,32 | 1,6 | 64 % | 56 % | 57 % |
+
+- **Falsas alarmas −23 % sin perder avisos.** Las fallas graduales (un episodio menos de 149), los episodios naturales y las cadenas, contando el aviso en el servicio o en su causa, quedan igual.
+- **El F1 por servicio baja (0,35 → 0,31)** porque la alarma del servicio que solo espera ya no cuenta como acierto. En los 101 episodios de propagación, el aviso en el propio servicio atascado pasa de 23 % a 10 %, pero lo da el causante: la cobertura sigue en 60 %.
+- **El suavizado baja más las falsas alarmas (1,6), pero pierde avisos**: 11 puntos menos de fallas graduales. La causa raíz las conserva.
+- **El costo está en burst.** Por escenario de carga (`data/resultados_v12/metricas_escenario_vs_cpu.csv`), en normal casi no cambia nada (F1 0,31 → 0,31; falsas alarmas 2,9 → 2,7/h). En progresivo, las falsas alarmas bajan de 2,9 a 2,1/h y el F1 de 0,48 a 0,43. En burst las falsas alarmas bajan de 3,5 a 1,5/h, pero el recall cae de 0,21 a 0,13: una ráfaga satura varios servicios a la vez y la regla apaga alarmas de `reservaciones` que sí eran propias.
+- **En las 25 corridas grabadas para el sprint** (configuraciones nuevas, umbral 0,90): las falsas alarmas bajan de 7,8 a 4,7 por hora (−39 %) y la precisión sube de 0,62 a 0,65. Las fallas graduales avisadas (22 de 26) y las cadenas avisadas en el servicio o su causa (85 %) quedan igual.
+- **Por qué 5 s:** con 0 s quita pocas falsas alarmas (2,6/h); con 10–20 s empieza a apagar avisos de episodios naturales (de 57 % a 46 %), porque bajo carga alta varios servicios se saturan a la vez. La ventana se eligió mirando estas mismas corridas; las 25 del sprint, que no se usaron para elegirla, confirman el efecto.
+- **Descartado: un umbral distinto por servicio.** A igual tasa de falsas alarmas da F1 0,368 contra 0,362: ruido.
+
+![Causa raíz](docs/img/causa_raiz_v12.png)
+
+**Probabilidad calibrada** (`ml/calibrar.py`). El puntaje del ensamble (promedio de 3 LSTM) no es una probabilidad. La calibración se ajusta en 3/4 de las corridas y se mide en el 1/4 restante. Cuánto acierta cada rango:
+
+| Rango de lo que marca la gráfica | Puntaje del modelo (antes) | Probabilidad calibrada (ahora) |
+| --- | --- | --- |
+| 0,1–0,3 | 2,5 % | 18 % |
+| 0,3–0,5 | 9 % | 40 % |
+| 0,5–0,7 | 20 % | 58 % |
+| 0,7–0,9 | 31 % | 81 % |
+| 0,9–1,0 | 72 % | (calibrada no pasa de ~0,88) |
+
+La alarma sigue siendo la misma (puntaje > 0,90), que en la escala calibrada es **0,51**: suena cuando es más probable que haya cuello de botella a que no. El archivo `data/resultados_v12/calibracion.json` guarda la curva. Si no existe, la demo y las gráficas muestran el puntaje como antes.
+
+![Calibración](docs/img/calibracion_v12.png)
+
+Las dos figuras se regeneran con `python ml/graficas_mejoras.py`, que las guarda en `data/resultados_v12/` y las copia en `docs/img/`.
+
+### 13.8 Intentos descartados: v13 y v14 (11-nov)
+
+Los dos buscaban lo mismo: menos falsas alarmas en cadena y más avisos en carga normal y progresiva. Se evaluaron con el mismo protocolo que v12 y ninguno lo superó.
+
+- **v13** (`ml/entrenar_conjunto.py --forma conjunta`, resultados en `data/resultados_v13/`): un LSTM que ve los 6 servicios a la vez y da las 6 probabilidades. A 3 falsas alarmas/h, F1 0,28 contra 0,36 de v12. Cadenas avisadas en el servicio, 23 % contra 27 %, y con su dependencia, 61 % contra 68 %. Fallas graduales, 59 % contra 71 %. En las corridas del sprint, F1 0,22 contra 0,40. Probable causa: tiene 6 veces menos ejemplos (56 mil segundos, en vez de un ejemplo por servicio y segundo).
+- **v14** (`bash ml/pipeline_v14.sh`, resultados en `data/resultados_v14/` y `resultados_v14base/`): v12 más 5 señales de **tiempo propio** (`datos.PROPIO`: tiempo propio, fracción del tiempo esperando a otros, cola de quienes lo llaman y cambio del tiempo propio en 5 y 15 s), entrenado con 29 corridas más (18 progresivas, 10 fallas lentas y `rnd_normal_10`, 204 en total). Se comparó con **v12 reentrenado con las mismas 204** (`v14base`), para separar el efecto de las señales del de las corridas:
+
+| Validación cruzada, 204 corridas | Precisión | Recall | F1 | Falsas alarmas/h | Fallas graduales avisadas |
+| --- | --- | --- | --- | --- | --- |
+| v12 reentrenado | 0,75 | 0,28 | 0,41 | 2,5 | 74 % |
+| v14 | 0,77 | 0,29 | 0,42 | 2,4 | 67 % |
+
+  La diferencia de F1 es menor que la que hay entre semillas del mismo modelo (0,41–0,44), y v14 avisa menos fallas graduales en las 3 semillas. Solo mejora un poco en burst (F1 0,35 → 0,36, falsas alarmas 2,4 → 1,8/h). En las 25 corridas del sprint, las 29 corridas nuevas subieron el recall (0,30 → 0,37) y también las falsas alarmas (7,8 → 9,9/h), con o sin las señales nuevas.
+
+**Conclusión:** con las métricas que medimos, el modelo ya está en su límite: lo que falta para avisar antes no está en los datos. Las mejoras que quedaban eran de uso (13.7). Para las ráfagas haría falta una señal externa (sala de espera virtual, visitas a la página del evento).
 
 ---
 
@@ -873,17 +1099,23 @@ Se reproduce con `python ml/por_escenario.py --resultados resultados_v9`.
 
 `ml/demo.py` muestra el modelo final funcionando: una tabla que se actualiza cada segundo con la CPU, la p95 y la cola de cada servicio, la probabilidad de cuello de botella en los próximos 30 s, la alarma del modelo, la de la regla CPU > 80 % y el estado real. Cuando un servicio entra en cuello de botella, dice con cuántos segundos de anticipación avisó cada método (lead time honesto). Por defecto usa **v12**; en pantalla aparece su nombre.
 
+Desde el 11-nov aplica los dos ajustes de la sección 13.7:
+- **Barra:** la probabilidad es la **calibrada**. El encabezado muestra `umbral = 0.51 (puntaje 0.90)`: la alarma suena con el mismo puntaje de siempre.
+- **Causa raíz:** si un servicio está en alarma pero espera a otro que también lo está, la columna del modelo muestra `↪ <causa>` en morado en vez de `⚠ ALARMA`. Aparece un evento "en alarma, pero espera a <causa>: el aviso pasa a la causa". Si ese servicio después se atasca, el resultado dice `avisó la causa (<causa>)`.
+- **Log (`--log`):** guarda `puntaje`, `prob_calibrada`, `alarma_modelo` (antes de causa raíz), `alarma_propia` y `espera_a`.
+
 ### 14.1 Modo repetición (recomendado para presentar)
 
-No necesita Docker y siempre muestra lo mismo. Reproduce una corrida grabada con las predicciones de la **validación cruzada**: cada corrida la predijo un modelo que no la vio al entrenar.
+No necesita Docker y siempre muestra lo mismo. Reproduce una corrida grabada con las predicciones de la **validación cruzada**: cada corrida la predijo un modelo que no la vio al entrenar. El estado real junta los cortes de menos de 5 s, como el etiquetado. Antes, un mismo episodio aparecía como muchos "entra" y "se recuperó".
 
 ```powershell
 python ml/demo.py --replay var_inj_leve_notificaciones_r1 --velocidad 2   # falla gradual: avisa 19 s antes
 python ml/demo.py --replay rnd_progresivo_08 --velocidad 2                # progresivo: avisa 27 s antes
 python ml/demo.py --replay rnd_lenta_06 --velocidad 2                     # falla lenta (sube en 2 min): 22 s antes
+python ml/demo.py --replay rnd_combo_prog_01 --velocidad 2                # caída en cadena: reservaciones "↪ ticket"
 ```
 
-En los tres, la regla de CPU no avisa antes. En la primera corrida, más adelante llega una inyección abrupta (t = 220 s): ninguno de los dos la anticipa, lo que ilustra el límite del modelo. Para ver la misma corrida con v11: `--resultados resultados_v11`.
+En la falla gradual y en la lenta, la regla de CPU cruza el 80 % cuando el problema ya empezó. En el progresivo la CPU de `reservaciones` ya supera el 80 % desde 63 s antes y sigue así hasta después de recuperarse: como ya estaba encendida no cuenta como aviso, y en este escenario esa regla da 14,3 falsas alarmas por hora (v12: 2,9). En la primera corrida, más adelante llega una inyección abrupta (t = 220 s): ninguno de los dos la anticipa, lo que ilustra el límite del modelo. Para ver la misma corrida con v11: `--resultados resultados_v11`.
 
 (La corrida que se usaba antes, `suave_inj_40_ticket_r2`, ya no sirve de ejemplo: en la validación cruzada de v9 le tocó otro fold y su modelo no la anticipa. Es un recordatorio de que un solo ejemplo no prueba nada; las cifras de la sección 13 sí.)
 
@@ -904,12 +1136,20 @@ python run_experiment.py --scenario burst --duration 360 --peak-users 70 --base-
 - **Conecta el cargador y haz el chequeo antes de probar.** Sin cargador, Windows baja la velocidad de la CPU; con la máquina ocupada (una llamada de Zoom, un juego) pasa lo mismo. Los servicios gastan el doble de CPU por petición, se saturan antes y en servicios que normalmente aguantan, y el modelo rinde mucho peor. Así salieron las 4 pruebas en vivo del 22-oct, con la laptop sin cargador (2,1–2,5 × lo normal): F1 0,25 y 25 falsas alarmas/h. Repetidas el 23-oct con el cargador (0,96–1,02 ×): F1 0,39, 0,5 falsas alarmas/h, y avisó las 3 fallas graduales (28–29 s antes en `pago`) y el progresivo 17 s antes.
 - Usa un `--run-id` nuevo en cada prueba; si repites uno, la corrida anterior se reemplaza.
 - Espera 60 s **con tráfico** antes de predecir: el arranque de Locust confunde al modelo en `reservaciones`.
+- El `t de carga` de la pantalla y de los eventos son segundos desde el inicio de la carga, el mismo eje de las gráficas. La demo y la corrida leen las métricas por separado, así que el inicio real y el Lead Time pueden diferir unos segundos. El valor oficial es el de la gráfica (sección 14.4).
 - En vivo el resultado varía de una corrida a otra, igual que en la evaluación. Para una presentación es más seguro el modo repetición.
 - Las falsas alarmas que se ven en pantalla son las de los 6 servicios juntos: con v12, ~12–18 por hora (una cada 3–5 min).
 - Para comparar con v11: `python ml/demo.py --modelo data/resultados_v11/modelo_ensamble.json`.
 - Para probar una ráfaga en rampa: `python run_experiment.py --scenario burst --duration 420 --peak-users 70 --base-users 15 --burst-times 80,250 --burst-ramp 60 --burst-len 30 --run-id vivo_burst_rampa`.
 
-Opciones: `--modelo` (un `.pt` o un ensamble `.json`), `--umbral` (corte de la alarma), `--log archivo.csv` (guarda cada segundo), `--sin-pantalla` (texto en vez de tabla), `--duracion` (segundos).
+Opciones: `--modelo` (un `.pt` o un ensamble `.json`), `--umbral` (corte de la alarma), `--log archivo.csv` (guarda cada segundo), `--sin-pantalla` (texto en vez de tabla), `--duracion` (segundos), `--exportar` (puerto para Prometheus y Grafana, 9108 por defecto; 0 lo apaga).
+
+**Tablero en Grafana (opcional):** `docker compose -f monitoreo/docker-compose.yml up -d` levanta Prometheus y Grafana. Con la demo corriendo, http://localhost:3000 muestra:
+- **El estado de cada servicio en una línea de tiempo:** verde = normal, naranja = el modelo predice, rojo = cuello de botella, morado = espera a otro.
+- **Las alertas activas.**
+- **Paneles por servicio:** la probabilidad, la latencia, la CPU, la cola, el tráfico y qué parte del tiempo cada servicio espera a otro.
+
+Todo está en `monitoreo/README.md`. Apágalo antes de grabar campañas.
 
 ### 14.3 Medir tus propias corridas en vivo
 
@@ -920,3 +1160,36 @@ python ml/verificar_vivo.py evaluar        # v12 por defecto
 ```
 
 El nombre debe empezar con `vivo_normal`, `vivo_progresivo` o `vivo_burst` (así se sabe el escenario). Se miden juntas todas las corridas `vivo_*` de `data/vivo/`.
+
+### 14.4 Gráfica de evidencia: predicción, inicio real y Prediction Lead Time
+
+`ml/evidencia_lead.py` dibuja una corrida grabada con la latencia p95 y la probabilidad del modelo de 3 servicios (o los que se pidan con `--servicios`). Marca el **instante de predicción** (cuando se enciende la alarma), el **inicio real** del cuello de botella y el **Prediction Lead Time** de cada episodio, junto a la alarma de la regla CPU > 80 %. Usa las predicciones de la validación cruzada, como el modo repetición, así que no necesita Docker.
+
+```powershell
+python ml/evidencia_lead.py                                          # falla lenta (rnd_lenta_06): 22 s; CPU cruza el 80 % al empezar
+python ml/evidencia_lead.py --run var_inj_leve_notificaciones_r1     # gradual 19 s; la abrupta, sin aviso previo
+python ml/evidencia_lead.py --run rnd_progresivo_08                  # progresivo: 27 s; la CPU ya estaba encendida (no cuenta)
+```
+
+Guarda `data/resultados_v12/evidencia_<run>.png` y un `.csv` con un episodio por fila. El Lead Time es el honesto de la demo (sección 10): solo cuenta una alarma que se enciende en los 30 s previos al inicio, tras 5 s apagada. Los servicios elegidos solos son los que tienen episodios y, hasta completar 3, los que los llaman o son llamados por ellos. Un servicio puede pasar su umbral de p95 sin episodio: está esperando a otro y la etiqueta de cuello de botella propio no lo cuenta (sección 7.1).
+
+Para una corrida **nueva**, que no está en esas predicciones, `ml/evidencia_vivo.py` la etiqueta con las mismas reglas en una carpeta temporal, le aplica el modelo final y guarda `data/<run>/evidencia_v12.png` y `.csv`. Cada servicio tiene su fila, con su cuello de botella real, los segundos en que solo esperó a otro servicio, su instante de predicción y su Lead Time. Las predicciones se calculan después de la corrida, sobre los datos grabados, y tampoco necesita Docker. Avisa si la corrida repite la configuración de una usada para entrenar.
+
+```powershell
+python ml/evidencia_vivo.py --run demo_progresivo_1                                     # los 6 servicios
+python ml/evidencia_vivo.py --run demo_progresivo_1 --servicios notificaciones,ticket   # solo esos
+```
+
+En esta gráfica, la zona rosa de cada fila es el cuello de botella propio del servicio y la zona gris son los segundos en que estuvo lento solo por esperar a otro. Las predicciones empiezan a los 60 s de carga, como en la demo.
+
+Las dos gráficas aplican los ajustes de la sección 13.7:
+- **Probabilidad calibrada:** la línea de cada servicio es la probabilidad calibrada y la línea punteada, el umbral equivalente (0,51).
+- **Franja morada "espera a <causa>":** marca las alarmas que pasaron al servicio causante.
+- **Texto de la derecha:** si un servicio no avisó por sí mismo, pero su causa sí avisó en los 30 s previos, dice "avisó la causa (<causa>)". En la tabla `.csv`, eso queda en la columna `aviso_en_causa`.
+
+**Segunda gráfica, `data/<run>/cadena_v12.png`: cómo se propaga el problema.** Muestra el tráfico (usuarios de Locust) y una fila por servicio en el orden de la cadena de llamadas: reservaciones → pago → ticket → notificaciones, y al final usuarios y eventos. Cada fila parte el tiempo medio por petición en **trabajo propio** (color sólido) y **espera al servicio que llama** (color claro), todas en la misma escala.
+- **Cómo se reparte el tiempo:** la espera es lo que midió el que llama (`edges.csv`). Si el que llama tiene más CPU que el llamado, la espera se limita a lo que tardó el llamado y el resto cuenta como trabajo propio, porque un servicio saturado ve lentas sus propias llamadas.
+- **Texto de la derecha:** de los segundos en que el servicio estuvo lento (p95 sobre su umbral), cuánto fue espera.
+- **Ejemplo (`sprint44`):** notificaciones (falla inyectada) es todo trabajo propio; ticket pasa el 89 % del tiempo lento esperando y pago, el 95 %. Reservaciones primero espera y después, con el máximo de usuarios y su CPU al 100 %, se vuelve lenta por sí misma.
+
+Ejemplo de cadena: `python ml/evidencia_vivo.py --run demo_progresivo_1`. Notificaciones avisa 15 s antes y reservaciones y ticket, que se atascan esperándolo, muestran "avisó la causa (notificaciones)". Al regenerar las gráficas del 11-nov se guardó la versión anterior como `evidencia_v12_anterior.png`.

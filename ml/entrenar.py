@@ -100,6 +100,8 @@ def main():
     ap.add_argument("--contexto", action="store_true", help="anadir metricas de las dependencias (*_dep)")
     ap.add_argument("--tendencias", action="store_true", help="anadir cambios en 5 y 15 s (d5_*, d15_*)")
     ap.add_argument("--largo", action="store_true", help="anadir tendencias de 60 y 120 s y tiempo hasta saturar")
+    ap.add_argument("--propio", action="store_true",
+                    help="anadir tiempo propio, fraccion de espera y cola de quienes lo llaman (datos.PROPIO)")
     ap.add_argument("--peso-temprano", type=float, default=0.0,
                     help="peso de los positivos a 20-30 s del inicio de un episodio (0 = sin cambio)")
     ap.add_argument("--excluir-contaminadas", action="store_true",
@@ -154,7 +156,8 @@ def main():
         if n.startswith("d") and n[1:].split("_")[0].isdigit() and not a.tendencias:
             return False
         return True
-    feats_usadas = [n for n in D.CONT if usar(n)] + (list(D.LARGO) if a.largo else [])
+    feats_usadas = ([n for n in D.CONT if usar(n)] + (list(D.LARGO) if a.largo else [])
+                    + ([n for n in D.PROPIO if usar(n)] if a.propio else []))
     cols = [D.COLUMNAS.index(n) for n in feats_usadas] + list(range(D.N_CONT, D.N_CONT + 1 + len(D.SERVICIOS)))
     print("Entradas: %s + falta + servicio (%d columnas)" % (", ".join(feats_usadas), len(cols)))
     # con y_inicio_30s se entrena y valida solo en segundos sin cuello de botella

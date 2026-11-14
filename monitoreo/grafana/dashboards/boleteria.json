@@ -1,0 +1,2586 @@
+{
+ "uid": "boleteria",
+ "title": "Boletería: ¿se está muriendo algo?",
+ "tags": [
+  "boleteria"
+ ],
+ "timezone": "browser",
+ "refresh": "1s",
+ "schemaVersion": 39,
+ "version": 4,
+ "editable": true,
+ "time": {
+  "from": "now-10m",
+  "to": "now"
+ },
+ "timepicker": {
+  "refresh_intervals": [
+   "1s",
+   "5s",
+   "10s",
+   "30s"
+  ]
+ },
+ "templating": {
+  "list": [
+   {
+    "name": "job",
+    "type": "custom",
+    "hide": 2,
+    "query": "modelo,modelo_prueba",
+    "current": {
+     "text": "modelo",
+     "value": "modelo"
+    },
+    "options": [
+     {
+      "text": "modelo",
+      "value": "modelo",
+      "selected": true
+     },
+     {
+      "text": "modelo_prueba",
+      "value": "modelo_prueba",
+      "selected": false
+     }
+    ]
+   }
+  ]
+ },
+ "panels": [
+  {
+   "type": "stat",
+   "title": "Segundos de carga",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 5,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "A",
+     "expr": "boleteria_t_carga{job=\"$job\"}",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "suffix: s",
+     "mappings": [],
+     "noValue": "sin demo",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#5B6475",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "text": {
+     "valueSize": 30
+    },
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 1
+  },
+  {
+   "type": "stat",
+   "title": "Modelo",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 5,
+    "y": 0,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "A",
+     "expr": "boleteria_calentando{job=\"$job\"}",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "prediciendo",
+         "color": "#2F7D4F",
+         "index": 0
+        }
+       }
+      },
+      {
+       "type": "range",
+       "options": {
+        "from": 1,
+        "to": 1000,
+        "result": {
+         "text": "calentando",
+         "color": "#E07B1F",
+         "index": 1
+        }
+       }
+      }
+     ],
+     "noValue": "sin demo",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#5B6475",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "text": {
+     "valueSize": 30
+    },
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 2
+  },
+  {
+   "type": "stat",
+   "title": "Servicios en cuello de botella",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 11,
+    "y": 0,
+    "w": 7,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "A",
+     "expr": "count(boleteria_estado{job=\"$job\"} == 3) or vector(0)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [],
+     "noValue": "0",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#2F7D4F",
+        "value": null
+       },
+       {
+        "color": "#C0322B",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "text": {
+     "valueSize": 30
+    },
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 3
+  },
+  {
+   "type": "stat",
+   "title": "Servicios donde el modelo predice",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 18,
+    "y": 0,
+    "w": 6,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "A",
+     "expr": "count(boleteria_estado{job=\"$job\"} == 2) or vector(0)",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [],
+     "noValue": "0",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#2F7D4F",
+        "value": null
+       },
+       {
+        "color": "#E07B1F",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "value",
+    "justifyMode": "center",
+    "text": {
+     "valueSize": 30
+    },
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 4
+  },
+  {
+   "type": "table",
+   "title": "Ahora: cada servicio, en el orden de la cadena de llamadas",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Estado: verde normal; naranja el modelo predice un cuello de botella en los proximos 30 s; rojo cuello de botella real; morado en alarma pero espera a otro servicio (el aviso queda en la causa). Alarma encendida hace: segundos desde que el modelo encendio la alarma. Ultimo cuello: cuanto antes aviso el modelo la ultima vez que el servicio entro en cuello de botella.",
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 24,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "A",
+     "expr": "max by (servicio) (boleteria_orden{job=\"$job\"})",
+     "format": "table",
+     "instant": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "B",
+     "expr": "max by (servicio) (boleteria_estado{job=\"$job\"})",
+     "format": "table",
+     "instant": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "C",
+     "expr": "max by (servicio) (boleteria_probabilidad{job=\"$job\"})",
+     "format": "table",
+     "instant": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "D",
+     "expr": "max by (servicio) (boleteria_cpu{job=\"$job\"})",
+     "format": "table",
+     "instant": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "E",
+     "expr": "max by (servicio) (boleteria_alarma_cpu{job=\"$job\"})",
+     "format": "table",
+     "instant": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "F",
+     "expr": "max by (servicio) (boleteria_p95_ms{job=\"$job\"})",
+     "format": "table",
+     "instant": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "G",
+     "expr": "max by (servicio) (boleteria_cola{job=\"$job\"})",
+     "format": "table",
+     "instant": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "H",
+     "expr": "max by (servicio) (boleteria_alarma_hace_s{job=\"$job\"})",
+     "format": "table",
+     "instant": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "I",
+     "expr": "max by (servicio, causa) (boleteria_causa{job=\"$job\"})",
+     "format": "table",
+     "instant": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "K",
+     "expr": "max by (servicio, modelo) (boleteria_ultimo_aviso{job=\"$job\"})",
+     "format": "table",
+     "instant": true
+    }
+   ],
+   "transformations": [
+    {
+     "id": "joinByField",
+     "options": {
+      "byField": "servicio",
+      "mode": "outer"
+     }
+    },
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "pattern": "^(servicio|Value #[A-H]|causa|modelo)$"
+      }
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "indexByName": {
+       "Value #A": 0,
+       "servicio": 1,
+       "Value #B": 2,
+       "Value #C": 3,
+       "Value #D": 4,
+       "Value #E": 5,
+       "Value #F": 6,
+       "Value #G": 7,
+       "Value #H": 8,
+       "causa": 9,
+       "modelo": 10
+      },
+      "renameByName": {
+       "Value #A": "orden",
+       "servicio": "Servicio",
+       "Value #B": "Estado",
+       "Value #C": "P(cuello en 30 s)",
+       "Value #D": "CPU",
+       "Value #E": "Regla CPU > 80 %",
+       "Value #F": "p95",
+       "Value #G": "Cola",
+       "Value #H": "Alarma encendida hace",
+       "causa": "Espera a",
+       "modelo": "Último cuello: el modelo"
+      }
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "sort": [
+       {
+        "field": "orden",
+        "desc": false
+       }
+      ]
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "left",
+      "cellOptions": {
+       "type": "auto"
+      }
+     },
+     "mappings": [
+      {
+       "type": "special",
+       "options": {
+        "match": "nan",
+        "result": {
+         "text": "—",
+         "index": 20
+        }
+       }
+      },
+      {
+       "type": "special",
+       "options": {
+        "match": "null",
+        "result": {
+         "text": "—",
+         "index": 21
+        }
+       }
+      }
+     ]
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "orden"
+      },
+      "properties": [
+       {
+        "id": "custom.hidden",
+        "value": true
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Servicio"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 150
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Estado"
+      },
+      "properties": [
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "0": {
+            "text": "normal",
+            "color": "#2F7D4F",
+            "index": 0
+           }
+          }
+         },
+         {
+          "type": "value",
+          "options": {
+           "1": {
+            "text": "↪ espera a otro",
+            "color": "#7B5FC0",
+            "index": 1
+           }
+          }
+         },
+         {
+          "type": "value",
+          "options": {
+           "2": {
+            "text": "⚠ EL MODELO PREDICE",
+            "color": "#E07B1F",
+            "index": 2
+           }
+          }
+         },
+         {
+          "type": "value",
+          "options": {
+           "3": {
+            "text": "✖ CUELLO DE BOTELLA",
+            "color": "#C0322B",
+            "index": 3
+           }
+          }
+         }
+        ]
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-background"
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "thresholds"
+        }
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#2F7D4F",
+           "value": null
+          },
+          {
+           "color": "#7B5FC0",
+           "value": 1
+          },
+          {
+           "color": "#E07B1F",
+           "value": 2
+          },
+          {
+           "color": "#C0322B",
+           "value": 3
+          }
+         ]
+        }
+       },
+       {
+        "id": "custom.width",
+        "value": 220
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "P(cuello en 30 s)"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percentunit"
+       },
+       {
+        "id": "min",
+        "value": 0
+       },
+       {
+        "id": "max",
+        "value": 1
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "custom.width",
+        "value": 260
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "gauge",
+         "mode": "basic",
+         "valueDisplayMode": "text"
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "thresholds"
+        }
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#2F7D4F",
+           "value": null
+          },
+          {
+           "color": "#E07B1F",
+           "value": 0.255
+          },
+          {
+           "color": "#C0322B",
+           "value": 0.51
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "CPU"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percent"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "custom.width",
+        "value": 80
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "thresholds"
+        }
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "text",
+           "value": null
+          },
+          {
+           "color": "#C0322B",
+           "value": 80
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Regla CPU > 80 %"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 150
+       },
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "0": {
+            "text": "ok",
+            "color": "#2F7D4F",
+            "index": 0
+           },
+           "1": {
+            "text": "⚠ ALARMA",
+            "color": "#C0322B",
+            "index": 1
+           }
+          }
+         }
+        ]
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "p95"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "ms"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "custom.width",
+        "value": 90
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Cola"
+      },
+      "properties": [
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "custom.width",
+        "value": 70
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Alarma encendida hace"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "s"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "custom.width",
+        "value": 170
+       },
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "special",
+          "options": {
+           "match": "nan",
+           "result": {
+            "text": "—",
+            "index": 20
+           }
+          }
+         },
+         {
+          "type": "special",
+          "options": {
+           "match": "null",
+           "result": {
+            "text": "—",
+            "index": 21
+           }
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Espera a"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 130
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#7B5FC0"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Último cuello: el modelo"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#1F5FBF"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   },
+   "id": 5
+  },
+  {
+   "type": "table",
+   "title": "Eventos de esta carga (el más reciente arriba)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Los mismos mensajes de la pantalla de python ml/demo.py.",
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 12,
+    "h": 11
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "A",
+     "expr": "last_over_time(boleteria_evento{job=\"$job\"}[30m]) * on(sesion) group_left() boleteria_sesion{job=\"$job\"}",
+     "format": "table",
+     "instant": true
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {
+       "Time": true,
+       "instance": true,
+       "job": true,
+       "__name__": true,
+       "n": true,
+       "sesion": true
+      },
+      "indexByName": {
+       "Value": 0,
+       "tipo": 1,
+       "texto": 2
+      },
+      "renameByName": {
+       "Value": "t",
+       "tipo": "Qué pasó",
+       "texto": "Detalle"
+      }
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "sort": [
+       {
+        "field": "t",
+        "desc": true
+       }
+      ]
+     }
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "left"
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "t"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "suffix: s"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "custom.width",
+        "value": 70
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Detalle"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "auto",
+         "wrapText": true
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Qué pasó"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 175
+       },
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-background"
+        }
+       },
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "aviso": {
+            "text": "⚠ el modelo avisa",
+            "color": "#E07B1F",
+            "index": 0
+           }
+          }
+         },
+         {
+          "type": "value",
+          "options": {
+           "cuello": {
+            "text": "✖ cuello de botella",
+            "color": "#C0322B",
+            "index": 1
+           }
+          }
+         },
+         {
+          "type": "value",
+          "options": {
+           "recupera": {
+            "text": "✓ se recuperó",
+            "color": "#2F7D4F",
+            "index": 2
+           }
+          }
+         },
+         {
+          "type": "value",
+          "options": {
+           "espera": {
+            "text": "↪ espera a otro",
+            "color": "#7B5FC0",
+            "index": 3
+           }
+          }
+         },
+         {
+          "type": "value",
+          "options": {
+           "otro": {
+            "text": "·",
+            "color": "#5B6475",
+            "index": 4
+           }
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   },
+   "id": 6
+  },
+  {
+   "type": "timeseries",
+   "title": "Probabilidad de cuello de botella en los próximos 30 s",
+   "description": "Probabilidad calibrada. La linea roja punteada es el umbral de la alarma (0,51).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 12,
+    "w": 12,
+    "h": 11
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "A",
+     "expr": "boleteria_probabilidad{job=\"$job\"}",
+     "legendFormat": "{{servicio}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "spanNulls": true,
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "transparent",
+        "value": null
+       },
+       {
+        "color": "#C0322B",
+        "value": 0.51
+       }
+      ]
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "min": 0,
+     "max": 1
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "ticket"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#1F5FBF"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pago"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#008300"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "reservaciones"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#6250D6"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "notificaciones"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#1BAF7A"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "usuarios"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#EDA100"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "eventos"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#E87BA4"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "id": 7
+  },
+  {
+   "type": "state-timeline",
+   "title": "Estado en el tiempo · verde normal · naranja el modelo predice · rojo cuello de botella · morado espera a otro",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 23,
+    "w": 24,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "A",
+     "expr": "boleteria_estado{job=\"$job\",servicio=\"reservaciones\"}",
+     "legendFormat": "reservaciones"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "B",
+     "expr": "boleteria_estado{job=\"$job\",servicio=\"pago\"}",
+     "legendFormat": "pago"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "C",
+     "expr": "boleteria_estado{job=\"$job\",servicio=\"ticket\"}",
+     "legendFormat": "ticket"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "D",
+     "expr": "boleteria_estado{job=\"$job\",servicio=\"notificaciones\"}",
+     "legendFormat": "notificaciones"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "E",
+     "expr": "boleteria_estado{job=\"$job\",servicio=\"usuarios\"}",
+     "legendFormat": "usuarios"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "F",
+     "expr": "boleteria_estado{job=\"$job\",servicio=\"eventos\"}",
+     "legendFormat": "eventos"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "fillOpacity": 85,
+      "lineWidth": 0
+     },
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#2F7D4F",
+        "value": null
+       },
+       {
+        "color": "#7B5FC0",
+        "value": 1
+       },
+       {
+        "color": "#E07B1F",
+        "value": 2
+       },
+       {
+        "color": "#C0322B",
+        "value": 3
+       }
+      ]
+     },
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "normal",
+         "color": "#2F7D4F",
+         "index": 0
+        }
+       }
+      },
+      {
+       "type": "value",
+       "options": {
+        "1": {
+         "text": "↪ espera a otro",
+         "color": "#7B5FC0",
+         "index": 1
+        }
+       }
+      },
+      {
+       "type": "value",
+       "options": {
+        "2": {
+         "text": "⚠ EL MODELO PREDICE",
+         "color": "#E07B1F",
+         "index": 2
+        }
+       }
+      },
+      {
+       "type": "value",
+       "options": {
+        "3": {
+         "text": "✖ CUELLO DE BOTELLA",
+         "color": "#C0322B",
+         "index": 3
+        }
+       }
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "showValue": "never",
+    "mergeValues": true,
+    "rowHeight": 0.85,
+    "alignValue": "left",
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": false
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "id": 8
+  },
+  {
+   "type": "row",
+   "title": "Detalle del sistema",
+   "collapsed": true,
+   "gridPos": {
+    "x": 0,
+    "y": 31,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [
+    {
+     "type": "table",
+     "title": "Historial: cada cuello de botella de esta carga y cuánto antes avisó cada método",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 33,
+      "w": 14,
+      "h": 9
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "refId": "A",
+       "expr": "last_over_time(boleteria_episodio{job=\"$job\"}[1h]) * on(sesion) group_left() boleteria_sesion{job=\"$job\"}",
+       "format": "table",
+       "instant": true
+      }
+     ],
+     "transformations": [
+      {
+       "id": "organize",
+       "options": {
+        "excludeByName": {
+         "Time": true,
+         "instance": true,
+         "job": true,
+         "__name__": true,
+         "n": true,
+         "sesion": true
+        },
+        "indexByName": {
+         "Value": 0,
+         "servicio": 1,
+         "modelo": 2,
+         "cpu": 3
+        },
+        "renameByName": {
+         "Value": "Empezó en",
+         "servicio": "Servicio",
+         "modelo": "Modelo",
+         "cpu": "CPU > 80 %"
+        }
+       }
+      },
+      {
+       "id": "sortBy",
+       "options": {
+        "sort": [
+         {
+          "field": "Empezó en",
+          "desc": true
+         }
+        ]
+       }
+      }
+     ],
+     "fieldConfig": {
+      "defaults": {
+       "custom": {
+        "align": "left"
+       }
+      },
+      "overrides": [
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "Empezó en"
+        },
+        "properties": [
+         {
+          "id": "unit",
+          "value": "s"
+         },
+         {
+          "id": "decimals",
+          "value": 0
+         },
+         {
+          "id": "custom.width",
+          "value": 110
+         }
+        ]
+       }
+      ]
+     },
+     "options": {
+      "showHeader": true,
+      "cellHeight": "sm",
+      "footer": {
+       "show": false
+      }
+     },
+     "id": 10
+    },
+    {
+     "type": "table",
+     "title": "Alertas activas (Prometheus)",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 14,
+      "y": 33,
+      "w": 10,
+      "h": 9
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "refId": "A",
+       "expr": "ALERTS{alertstate=\"firing\"}",
+       "format": "table",
+       "instant": true
+      }
+     ],
+     "transformations": [
+      {
+       "id": "organize",
+       "options": {
+        "excludeByName": {
+         "Time": true,
+         "Value": true,
+         "alertstate": true,
+         "__name__": true,
+         "job": true,
+         "instance": true
+        },
+        "indexByName": {
+         "alertname": 0,
+         "servicio": 1,
+         "causa": 2,
+         "severidad": 3
+        },
+        "renameByName": {
+         "alertname": "Alerta",
+         "servicio": "Servicio",
+         "causa": "Espera a",
+         "severidad": "Severidad"
+        }
+       }
+      }
+     ],
+     "fieldConfig": {
+      "defaults": {
+       "custom": {
+        "align": "left"
+       }
+      },
+      "overrides": []
+     },
+     "options": {
+      "showHeader": true,
+      "cellHeight": "sm",
+      "footer": {
+       "show": false
+      }
+     },
+     "id": 11
+    },
+    {
+     "type": "timeseries",
+     "title": "Latencia p95 (ms)",
+     "description": "",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 42,
+      "w": 12,
+      "h": 8
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "refId": "A",
+       "expr": "boleteria_p95_ms{job=\"$job\"} or on(servicio) (1000 * histogram_quantile(0.95, sum by (le, servicio) (rate(http_request_duration_seconds_bucket[5s]))))",
+       "legendFormat": "{{servicio}}"
+      }
+     ],
+     "fieldConfig": {
+      "defaults": {
+       "unit": "ms",
+       "custom": {
+        "lineWidth": 2,
+        "fillOpacity": 0,
+        "showPoints": "never",
+        "spanNulls": true,
+        "thresholdsStyle": {
+         "mode": "off"
+        },
+        "scaleDistribution": {
+         "type": "log",
+         "log": 10
+        }
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "transparent",
+          "value": null
+         }
+        ]
+       },
+       "color": {
+        "mode": "palette-classic"
+       }
+      },
+      "overrides": [
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "ticket"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1F5FBF"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "pago"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#008300"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "reservaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#6250D6"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "notificaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1BAF7A"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "usuarios"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#EDA100"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "eventos"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#E87BA4"
+          }
+         }
+        ]
+       }
+      ]
+     },
+     "options": {
+      "legend": {
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     },
+     "id": 12
+    },
+    {
+     "type": "timeseries",
+     "title": "CPU por servicio",
+     "description": "",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 12,
+      "y": 42,
+      "w": 12,
+      "h": 8
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "refId": "A",
+       "expr": "boleteria_cpu{job=\"$job\"}",
+       "legendFormat": "{{servicio}}"
+      }
+     ],
+     "fieldConfig": {
+      "defaults": {
+       "unit": "percent",
+       "custom": {
+        "lineWidth": 2,
+        "fillOpacity": 0,
+        "showPoints": "never",
+        "spanNulls": true,
+        "thresholdsStyle": {
+         "mode": "dashed"
+        }
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "transparent",
+          "value": null
+         },
+         {
+          "color": "#C0322B",
+          "value": 80
+         }
+        ]
+       },
+       "color": {
+        "mode": "palette-classic"
+       },
+       "min": 0,
+       "max": 110
+      },
+      "overrides": [
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "ticket"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1F5FBF"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "pago"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#008300"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "reservaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#6250D6"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "notificaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1BAF7A"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "usuarios"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#EDA100"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "eventos"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#E87BA4"
+          }
+         }
+        ]
+       }
+      ]
+     },
+     "options": {
+      "legend": {
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     },
+     "id": 13
+    },
+    {
+     "type": "timeseries",
+     "title": "Tiempo esperando a otros servicios (% del tiempo de cada petición)",
+     "description": "Cerca de 100 %: lento porque espera al que llama. Bajo: su lentitud es trabajo propio.",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 50,
+      "w": 12,
+      "h": 8
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "refId": "A",
+       "expr": "clamp_max(100 * sum by (service) (rate(downstream_request_duration_seconds_sum[5s]) / rate(downstream_request_duration_seconds_count[5s])) / (sum by (service) (rate(http_request_duration_seconds_sum[5s])) / sum by (service) (rate(http_request_duration_seconds_count[5s]))), 100)",
+       "legendFormat": "{{service}}"
+      }
+     ],
+     "fieldConfig": {
+      "defaults": {
+       "unit": "percent",
+       "custom": {
+        "lineWidth": 2,
+        "fillOpacity": 0,
+        "showPoints": "never",
+        "spanNulls": true,
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "transparent",
+          "value": null
+         }
+        ]
+       },
+       "color": {
+        "mode": "palette-classic"
+       },
+       "min": 0,
+       "max": 100
+      },
+      "overrides": [
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "ticket"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1F5FBF"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "pago"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#008300"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "reservaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#6250D6"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "notificaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1BAF7A"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "usuarios"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#EDA100"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "eventos"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#E87BA4"
+          }
+         }
+        ]
+       }
+      ]
+     },
+     "options": {
+      "legend": {
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     },
+     "id": 14
+    },
+    {
+     "type": "timeseries",
+     "title": "Peticiones en curso (cola)",
+     "description": "",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 12,
+      "y": 50,
+      "w": 12,
+      "h": 8
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "refId": "A",
+       "expr": "boleteria_cola{job=\"$job\"} or on(servicio) http_requests_in_flight",
+       "legendFormat": "{{servicio}}"
+      }
+     ],
+     "fieldConfig": {
+      "defaults": {
+       "unit": "none",
+       "custom": {
+        "lineWidth": 2,
+        "fillOpacity": 0,
+        "showPoints": "never",
+        "spanNulls": true,
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "transparent",
+          "value": null
+         }
+        ]
+       },
+       "color": {
+        "mode": "palette-classic"
+       }
+      },
+      "overrides": [
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "ticket"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1F5FBF"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "pago"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#008300"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "reservaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#6250D6"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "notificaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1BAF7A"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "usuarios"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#EDA100"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "eventos"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#E87BA4"
+          }
+         }
+        ]
+       }
+      ]
+     },
+     "options": {
+      "legend": {
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     },
+     "id": 15
+    },
+    {
+     "type": "timeseries",
+     "title": "Tráfico: peticiones por segundo",
+     "description": "",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 58,
+      "w": 12,
+      "h": 8
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "refId": "A",
+       "expr": "sum by (service) (rate(http_requests_total[5s]))",
+       "legendFormat": "{{service}}"
+      }
+     ],
+     "fieldConfig": {
+      "defaults": {
+       "unit": "reqps",
+       "custom": {
+        "lineWidth": 2,
+        "fillOpacity": 0,
+        "showPoints": "never",
+        "spanNulls": true,
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "transparent",
+          "value": null
+         }
+        ]
+       },
+       "color": {
+        "mode": "palette-classic"
+       }
+      },
+      "overrides": [
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "ticket"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1F5FBF"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "pago"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#008300"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "reservaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#6250D6"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "notificaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1BAF7A"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "usuarios"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#EDA100"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "eventos"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#E87BA4"
+          }
+         }
+        ]
+       }
+      ]
+     },
+     "options": {
+      "legend": {
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     },
+     "id": 16
+    },
+    {
+     "type": "timeseries",
+     "title": "Errores por segundo (5xx)",
+     "description": "",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 12,
+      "y": 58,
+      "w": 12,
+      "h": 8
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "refId": "A",
+       "expr": "sum by (service) (rate(http_requests_total{status=~\"5..\"}[5s]))",
+       "legendFormat": "{{service}}"
+      }
+     ],
+     "fieldConfig": {
+      "defaults": {
+       "unit": "reqps",
+       "custom": {
+        "lineWidth": 2,
+        "fillOpacity": 0,
+        "showPoints": "never",
+        "spanNulls": true,
+        "thresholdsStyle": {
+         "mode": "off"
+        }
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "transparent",
+          "value": null
+         }
+        ]
+       },
+       "color": {
+        "mode": "palette-classic"
+       }
+      },
+      "overrides": [
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "ticket"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1F5FBF"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "pago"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#008300"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "reservaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#6250D6"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "notificaciones"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#1BAF7A"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "usuarios"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#EDA100"
+          }
+         }
+        ]
+       },
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "eventos"
+        },
+        "properties": [
+         {
+          "id": "color",
+          "value": {
+           "mode": "fixed",
+           "fixedColor": "#E87BA4"
+          }
+         }
+        ]
+       }
+      ]
+     },
+     "options": {
+      "legend": {
+       "displayMode": "list",
+       "placement": "bottom",
+       "showLegend": true
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     },
+     "id": 17
+    }
+   ],
+   "id": 9
+  }
+ ],
+ "annotations": {
+  "list": []
+ }
+}
