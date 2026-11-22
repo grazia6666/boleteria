@@ -23,9 +23,12 @@ Modo repeticion (sin Docker, siempre igual; ideal para presentar):
   predicciones.csv): cada corrida la predijo un modelo que no la vio al entrenar, asi que es honesto.
   Ejemplos con v12 (en la falla gradual y la lenta, la CPU cruza el 80 % cuando el problema ya empezo; en el
   progresivo ya estaba encendida desde 63 s antes y no cuenta como aviso):
-    var_inj_leve_notificaciones_r1  falla gradual en notificaciones: avisa 19 s antes
-    rnd_progresivo_08               crecimiento progresivo: avisa 27 s antes de que se sature reservaciones
-    rnd_lenta_06                    falla lenta en ticket (sube en 2 min): avisa 22 s antes
+    var_inj_leve_notificaciones_r1  falla gradual en notificaciones: avisa 19 s antes (14 s antes del primer pico
+                                    de latencia: anticipacion real)
+    rnd_lenta_06                    falla lenta en ticket (sube en 2 min): avisa 22 s antes (3 s antes del primer pico)
+    rnd_progresivo_08               crecimiento progresivo: avisa 27 s antes del cuello de botella PROPIO de
+                                    reservaciones, pero 2 s despues de que su latencia pasara el umbral (estaba lento
+                                    esperando a otros): no sirve como ejemplo de anticipacion (README 13.9)
   El "estado real" es la etiqueta de cuello de botella propio de esa corrida.
 
 Modelo: por defecto el final, v12 = ensamble de 3 LSTM entrenado con 175 corridas, 95 de ellas de
@@ -450,18 +453,24 @@ def actualizar_real(e, cond):
     return None
 
 
-def inicio_de_carga():
-    """Instante en que arranco la corrida en curso (t0_locust de su meta.json), el cero de las graficas.
-    None si no hay una corrida reciente, por ejemplo si Locust se lanzo a mano."""
+def corrida_en_curso():
+    """(t0_locust, run_id) de la corrida de run_experiment.py en curso (t0 es el cero de las graficas).
+    (None, None) si no hay ninguna, por ejemplo con solo trafico de fondo o con Locust lanzado a mano."""
     metas = glob.glob(os.path.join(HERE, "data", "*", "meta.json"))
     if not metas:
-        return None
+        return None, None
     try:
         meta = json.load(open(max(metas, key=os.path.getmtime)))
-    except ValueError:   # run_experiment.py lo esta escribiendo en este momento
-        return None
+    except (OSError, ValueError):   # run_experiment.py lo esta escribiendo en este momento
+        return None, None
     fin = meta.get("t0_locust", 0) + meta.get("duration", 0) + 30
-    return meta["t0_locust"] if "t0_locust" in meta and time.time() < fin else None
+    if "t0_locust" in meta and time.time() < fin:
+        return meta["t0_locust"], meta.get("run_id", "")
+    return None, None
+
+
+def inicio_de_carga():
+    return corrida_en_curso()[0]
 
 
 # ------------------------------------------------------------------ pantalla
@@ -646,6 +655,7 @@ def main():
     con_trafico = 0
     sin_trafico = 0
     t0_carga = None
+    corrida = None   # t0 de la corrida de run_experiment.py que se esta mostrando (None = sin corrida)
     try:
         while True:
             k += 1
@@ -664,11 +674,23 @@ def main():
                     exp.nueva_sesion()
                 con_trafico = 0
                 t0_carga = None
+                corrida = None
                 snaps.clear()
             elif sin_trafico == 0:
                 con_trafico += 1
+            if con_trafico:
+                # que corrida es (cada 2 s): con trafico de fondo (python entorno.py iniciar) no hay pausa entre
+                # corridas, asi que el cambio se detecta por el meta.json de run_experiment.py. Abre una sesion
+                # nueva en el tablero y reinicia el reloj, pero NO borra la historia: el modelo no vuelve a calentar.
+                nueva, run_id = corrida_en_curso() if (t0_carga is None or k % 2 == 0) else (corrida, None)
                 if t0_carga is None:
-                    t0_carga = inicio_de_carga()
+                    corrida, t0_carga = nueva, nueva or time.time() - con_trafico
+                elif nueva != corrida:
+                    corrida, t0_carga = nueva, nueva or time.time()
+                    if exp:
+                        exp.nueva_sesion()
+                    eventos.append("[t=  0 s] ── %s ──" % ("corrida nueva: %s" % run_id if nueva
+                                                         else "terminó la corrida: tráfico de fondo"))
             snaps.append(snap)
             # segundos desde el inicio de la carga, el reloj de las graficas (sin meta.json, desde que se vio trafico)
             t_carga = int(time.time() - t0_carga) if t0_carga else con_trafico

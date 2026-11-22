@@ -1,0 +1,28 @@
+# Pagina de la boleteria: ver eventos, comprar entradas y ver tus tickets. Se levanta aparte de los servicios:
+#   docker compose -f web/docker-compose.yml up -d        ->  http://localhost:8080
+#   docker compose -f web/docker-compose.yml down
+# Necesita los servicios arriba (docker compose up -d). Si python ml/demo.py --exportar esta corriendo, la pagina
+# muestra el aviso del modelo a quien compra. NO usarla durante las campanas: cada compra es trafico real.
+name: boleteria_web
+
+services:
+  web:
+    image: nginx:1.27.2-alpine
+    container_name: boleteria-web
+    volumes:
+      - ./index.html:/usr/share/nginx/html/index.html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    cpus: "0.5"
+    mem_limit: 64m
+    restart: unless-stopped
+    networks:
+      - boleteria
+
+networks:
+  boleteria:
+    external: true
+    name: boleteria_nube_boleteria

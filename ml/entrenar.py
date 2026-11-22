@@ -102,6 +102,9 @@ def main():
     ap.add_argument("--largo", action="store_true", help="anadir tendencias de 60 y 120 s y tiempo hasta saturar")
     ap.add_argument("--propio", action="store_true",
                     help="anadir tiempo propio, fraccion de espera y cola de quienes lo llaman (datos.PROPIO)")
+    ap.add_argument("--freno", action="store_true",
+                    help="anadir el freno de CPU de Docker: fraccion frenada, su media de 10 s, sus cambios y el de "
+                         "las dependencias (datos.FRENO; solo corridas grabadas desde el 20-nov, p. ej. data_thr/)")
     ap.add_argument("--peso-temprano", type=float, default=0.0,
                     help="peso de los positivos a 20-30 s del inicio de un episodio (0 = sin cambio)")
     ap.add_argument("--excluir-contaminadas", action="store_true",
@@ -157,7 +160,8 @@ def main():
             return False
         return True
     feats_usadas = ([n for n in D.CONT if usar(n)] + (list(D.LARGO) if a.largo else [])
-                    + ([n for n in D.PROPIO if usar(n)] if a.propio else []))
+                    + ([n for n in D.PROPIO if usar(n)] if a.propio else [])
+                    + ([n for n in D.FRENO if usar(n)] if a.freno else []))
     cols = [D.COLUMNAS.index(n) for n in feats_usadas] + list(range(D.N_CONT, D.N_CONT + 1 + len(D.SERVICIOS)))
     print("Entradas: %s + falta + servicio (%d columnas)" % (", ".join(feats_usadas), len(cols)))
     # con y_inicio_30s se entrena y valida solo en segundos sin cuello de botella

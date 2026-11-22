@@ -6,3 +6,6 @@ data/
 
 __pycache__/
 *.pyc
+
+# campana del freno de CPU (v15) y replica de la ablacion: se regenera con run_campaign.py --data data_thr
+data_thr/

@@ -44,7 +44,11 @@ ARRANQUE = 30        # s tras el inicio del trafico que las tendencias largas no
 # de cuello de botella propio usa el tiempo propio; v12 no lo recibia como entrada.
 PROPIO = ["lat_propia", "frac_espera", "cola_llaman", "d5_lat_propia", "d15_lat_propia"]
 LLAMADORES = {s: [c for c, deps in DEPENDE.items() if s in deps] for s in SERVICIOS}
-COLUMNAS = CONT + ["falta"] + ["srv_" + s for s in SERVICIOS] + LARGO + PROPIO
+# freno de CPU de Docker (thr_pct del recolector, desde el 20-nov; opcionales: entrenar.py --freno). Aparece cuando el
+# contenedor choca contra su cuota de 1 CPU en rafagas de 100 ms, con la CPU promedio todavia en 40-70 %. Las corridas
+# grabadas antes no lo tienen: valen 0.
+FRENO = ["freno", "freno_10s", "d5_freno", "d15_freno", "freno_dep"]
+COLUMNAS = CONT + ["falta"] + ["srv_" + s for s in SERVICIOS] + LARGO + PROPIO + FRENO
 NF = len(COLUMNAS)
 NORM = list(range(N_CONT)) + list(range(N_CONT + 1 + len(SERVICIOS), NF))   # columnas que se estandarizan
 
@@ -106,6 +110,14 @@ def propio(lat_propia_ms, lat_dep_ms, lat_mean_ms, colas_llaman):
     return np.column_stack([lp, frac, cola, _cambio(lp, 5), _cambio(lp, 15)])
 
 
+def freno(thr_pct, thr_deps):
+    """Entradas del freno de CPU: fraccion del tiempo frenado (0-1), su media de 10 s, sus cambios en 5 y 15 s y el
+    maximo de los servicios a los que llama."""
+    fr = np.clip(np.asarray(thr_pct, dtype=float), 0, 100) / 100.0
+    dep = np.max(np.clip(thr_deps, 0, 100), 0) / 100.0 if len(thr_deps) else np.zeros(len(fr))
+    return np.column_stack([fr, _media(fr, 10), _cambio(fr, 5), _cambio(fr, 15), dep])
+
+
 def _transformar(f):
     return np.column_stack([
         f["cpu"].values / 100.0,
@@ -137,6 +149,8 @@ def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=(), excluir_grupos=())
     agg.update({"scrape_ok": "min", "bn_ahora": "max", "y_30s": "max", "y_inicio_30s": "max",
                 "utilizable": "min", "evaluable": "min", "t_hasta_inicio": "min"})
     agg.update({c: "mean" for c in ("lat_propia_ms", "lat_dep_ms") if c in d.columns})   # los escribe etiquetar.py
+    if "thr_pct" in d.columns:   # freno de CPU (solo corridas grabadas desde el 20-nov)
+        agg["thr_pct"] = "mean"
 
     # primera pasada: rejilla de 1 s por (corrida, servicio)
     series = []
@@ -147,6 +161,8 @@ def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=(), excluir_grupos=())
         a = a.reindex(full)
         series.append((run, srv, g["grupo"].iloc[0], full, a, a[FEATS].ffill().fillna(0.0)))
     por_clave = {(run, srv): f.set_index(full) for run, srv, _, full, _, f in series}
+    thr_clave = {(run, srv): pd.Series(a.reindex(columns=["thr_pct"])["thr_pct"].ffill().fillna(0.0).values, index=full)
+                 for run, srv, _, full, a, _ in series}
 
     Xs, cpus, bns, ys, y30s, uts, evs, runs, srvs, grs, poss, sts, secs, eprows, ths = ([] for _ in range(15))
     start = 0
@@ -171,7 +187,10 @@ def cargar(data_dir, sufijo="", objetivo="y_30s", excluir=(), excluir_grupos=())
         llaman = [por_clave[(run, c)].reindex(full).ffill().fillna(0.0)["cola"].values
                   for c in LLAMADORES[srv] if (run, c) in por_clave]
         pr = propio(pp["lat_propia_ms"].values, pp["lat_dep_ms"].values, f["lat_mean_ms"].values, llaman)
-        Xs.append(np.column_stack([base, tend, falta, onehot, lg, pr]))
+        thr_deps = [thr_clave[(run, s)].reindex(full).ffill().fillna(0.0).values
+                    for s in DEPENDE.get(srv, []) if (run, s) in thr_clave]
+        fr = freno(thr_clave[(run, srv)].values, thr_deps)
+        Xs.append(np.column_stack([base, tend, falta, onehot, lg, pr, fr]))
         ths.append(a["t_hasta_inicio"].values)
         cpus.append(f["cpu"].values)
         bns.append(a["bn_ahora"].ffill().fillna(0).values.astype(int))

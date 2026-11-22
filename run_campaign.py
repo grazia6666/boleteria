@@ -419,6 +419,7 @@ def consolidar():
 
 # ------------------------------------------------------------------ main
 def main():
+    global DATA
     ap = argparse.ArgumentParser()
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--load", type=int, default=150, help="cpu_load final de las inyecciones")
@@ -433,11 +434,22 @@ def main():
                     help="quitar la marca OK de las corridas que no pasan el control de calidad (se repiten)")
     ap.add_argument("--aceptar-contaminadas", action="store_true",
                     help="marcar OK una corrida nueva aunque no pase el control de calidad")
+    ap.add_argument("--data", default=DATA,
+                    help="carpeta de las corridas y del dataset (por defecto data/). Otra carpeta = campana aparte, "
+                         "con sus propias normal_base como referencia (p. ej. data_thr/ para el freno de CPU)")
     args = ap.parse_args()
+    DATA = os.path.abspath(args.data)
+    os.makedirs(DATA, exist_ok=True)
 
     if args.solo_consolidar:
         consolidar()
         return
+
+    # las corridas para entrenar se graban desde reposo, como las 175 del modelo: sin trafico de fondo
+    sys.path.insert(0, os.path.join(HERE, "loadtest"))
+    import fondo
+    if fondo.parar(silencioso=True):
+        print("[fondo] se apago el trafico de fondo para la campana (volver a encenderlo: python entorno.py iniciar)")
 
     ref = referencia_costo()
     if args.repetir_contaminadas:
@@ -477,7 +489,7 @@ def main():
             restart_stack()
             cmd = [PY, os.path.join(HERE, "run_experiment.py"), "--scenario", p["scenario"],
                    "--duration", str(p["duration"]), "--run-id", p["id"], "--peak-users", str(p["peak"]),
-                   "--base-users", str(p.get("base", 15))]
+                   "--base-users", str(p.get("base", 15)), "--data", DATA]
             for inj in p["inject"]:
                 cmd += ["--inject", inj]
             if p.get("burst_times"):

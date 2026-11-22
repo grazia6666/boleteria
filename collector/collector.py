@@ -58,7 +58,14 @@ def stats_worker(client, name):
                 mem = s["memory_stats"]
                 st = mem.get("stats", {})
                 usage = mem["usage"] - st.get("inactive_file", st.get("cache", 0))
-                latest[name] = {"cpu": cores / CPU_LIMIT * 100, "ram_mb": usage / 2**20}
+                # freno de CPU (cgroups): cuantos periodos de 100 ms el contenedor agoto su cuota de 1 CPU y tuvo
+                # que esperar. Puede subir antes que la latencia: es la primera senal de que no le alcanza la CPU
+                th, pth = cs.get("throttling_data") or {}, pcs.get("throttling_data") or {}
+                per = th.get("periods", 0) - pth.get("periods", 0)
+                thr_pct = 100.0 * (th.get("throttled_periods", 0) - pth.get("throttled_periods", 0)) / per if per > 0 else 0.0
+                thr_ms = (th.get("throttled_time", 0) - pth.get("throttled_time", 0)) / 1e6
+                latest[name] = {"cpu": cores / CPU_LIMIT * 100, "ram_mb": usage / 2**20,
+                                "thr_pct": thr_pct, "thr_ms": max(thr_ms, 0.0)}
             except (KeyError, ZeroDivisionError):
                 continue
     except Exception as e:
@@ -183,7 +190,8 @@ def sampler(name, port, args, t0, stop, lock, w, f, ew, fe):
             pass
         with lock:
             w.writerow([f"{ts:.3f}", name, row["cpu"], row["ram_mb"], row["rps"], row["lat_mean_ms"],
-                        row["lat_p95_ms"], row["cola"], row["err_rps"], row["scrape_ok"]])
+                        row["lat_p95_ms"], row["cola"], row["err_rps"], row["scrape_ok"],
+                        st.get("thr_pct", ""), st.get("thr_ms", "")])
             f.flush()
             for r in edge_rows:
                 ew.writerow(r)
@@ -213,7 +221,7 @@ def main():
     with open(args.out, "w", newline="") as f, open(edges_path, "w", newline="") as fe:
         w, ew = csv.writer(f), csv.writer(fe)
         w.writerow(["timestamp", "servicio", "cpu", "ram_mb", "rps", "lat_mean_ms",
-                    "lat_p95_ms", "cola", "err_rps", "scrape_ok"])
+                    "lat_p95_ms", "cola", "err_rps", "scrape_ok", "thr_pct", "thr_ms"])
         ew.writerow(["timestamp", "origen", "destino", "cps", "lat_mean_ms", "lat_p95_ms", "err_ps"])
         t0 = time.time()
         hilos = [threading.Thread(target=sampler, args=(n, p, args, t0, stop, lock, w, f, ew, fe))

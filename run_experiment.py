@@ -6,8 +6,13 @@ Ejemplos:
   python run_experiment.py --scenario burst --duration 600 \
       --inject pago:120:90:150 --inject pago:360:60:150
 Resultado en data/<run_id>/: metrics.csv, events.csv, locust_stats.csv, meta.json
+
+Si el trafico de fondo esta encendido (python entorno.py iniciar), se corta cuando el escenario ya esta mandando
+pedidos y se vuelve a encender unos segundos antes de que termine: la demo y Grafana no ven ningun hueco y no
+vuelven a calentar. El escenario es el mismo de siempre (meta.json guarda "con_fondo").
 """
 import argparse
+import csv
 import json
 import os
 import subprocess
@@ -17,6 +22,23 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
+sys.path.insert(0, os.path.join(HERE, "loadtest"))
+import fondo  # noqa: E402
+
+
+def esperar_pedidos(historia, limite=20):
+    """Espera (hasta `limite` s) a que el Locust del escenario haya hecho su primer pedido, mirando su CSV de
+    historia (una fila por segundo). Locust tarda ~3 s en arrancar."""
+    t = time.time()
+    while time.time() - t < limite:
+        try:
+            for fila in csv.DictReader(open(historia)):
+                if float(fila.get("Total Request Count") or 0) > 0:
+                    return True
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.25)
+    return False
 
 
 def main():
@@ -31,17 +53,24 @@ def main():
     ap.add_argument("--burst-len", type=int, default=25, help="burst: duracion de cada rafaga en s")
     ap.add_argument("--burst-ramp", type=int, default=0,
                     help="burst: segundos que tarda cada rafaga en llegar al pico (0 = de golpe)")
+    ap.add_argument("--data", default=os.path.join(HERE, "data"),
+                    help="carpeta donde se guarda la corrida (por defecto data/; data_thr/ para la campana con freno)")
     args = ap.parse_args()
 
     destinos = "-".join(sorted({i.split(":")[0] for i in args.inject})) or "sin-inyeccion"
     run_id = args.run_id or f"{args.scenario}_{destinos}_{datetime.now():%Y%m%d_%H%M%S}"
-    out = os.path.join(HERE, "data", run_id)
+    out = os.path.join(args.data, run_id)
     os.makedirs(out, exist_ok=True)
     # el inyector agrega filas a events.csv: si la carpeta ya existia (run_id repetido o reintento de la
     # campana), las fallas de la corrida anterior se mezclarian con las de esta
     if os.path.exists(os.path.join(out, "events.csv")):
         os.remove(os.path.join(out, "events.csv"))
     print(f"== Run {run_id} ==")
+    con_fondo = fondo.activo()          # estado del trafico de fondo (None si esta apagado)
+    fondo_vuelto = con_fondo is None    # True cuando ya no hay que volver a encenderlo
+    if con_fondo:
+        print(f"[fondo] encendido ({con_fondo['usuarios']} usuarios): se corta al arrancar el escenario "
+              "y vuelve al final")
 
     subprocess.run([PY, os.path.join(HERE, "loadtest", "inyector.py"), "--reset"], check=True)
     time.sleep(2)
@@ -77,10 +106,21 @@ def main():
                    "inject": args.inject, "base_users": args.base_users,
                    "peak_users": args.peak_users, "t0_locust": t0,
                    "burst_times": args.burst_times, "burst_len": args.burst_len,
-                   "burst_ramp": args.burst_ramp},
+                   "burst_ramp": args.burst_ramp, "con_fondo": bool(con_fondo)},
                   open(os.path.join(out, "meta.json"), "w"), indent=2)
 
-        locust.wait()
+        if con_fondo:   # se corta el fondo cuando el escenario ya manda pedidos: solape de ~1 s, nunca hueco
+            esperar_pedidos(os.path.join(out, "locust_stats_history.csv"))
+            time.sleep(1)
+            fondo.parar(silencioso=True)
+        while locust.poll() is None:
+            if not fondo_vuelto and time.time() >= t0 + args.duration - fondo.RELEVO_S:
+                fondo.iniciar(con_fondo["usuarios"], silencioso=True)   # vuelve antes de que el escenario pare
+                fondo_vuelto = True
+            time.sleep(0.5)
+        if not fondo_vuelto:
+            fondo.iniciar(con_fondo["usuarios"], silencioso=True)
+            fondo_vuelto = True
         inyector.wait()
         time.sleep(15)  # cola residual: se sigue grabando mientras el sistema se recupera
         collector.wait(timeout=30)
@@ -91,6 +131,9 @@ def main():
             if p.poll() is None:
                 p.terminate()
         subprocess.run([PY, os.path.join(HERE, "loadtest", "inyector.py"), "--reset"])
+        if not fondo_vuelto:   # se corto antes de tiempo (Ctrl+C o error): el fondo vuelve igual
+            fondo.iniciar(con_fondo["usuarios"], silencioso=True)
+            print("[fondo] trafico de fondo encendido de nuevo")
     print(f"Listo -> {out}")
 
 
