@@ -9,7 +9,7 @@ ya habia pasado su umbral, aunque fuera un segundo, en la ventana de 30 s previa
 
 Uso (desde la raiz, sobre las predicciones de la validacion cruzada):
   python ml/anticipacion_latencia.py
-  python ml/anticipacion_latencia.py --resultados resultados_v11
+  python ml/anticipacion_latencia.py --resultados resultados_v12_sindep
 Guarda data/<resultados>/anticipacion_latencia.csv (resumen) y anticipacion_latencia_episodios.csv (detalle).
 """
 import argparse

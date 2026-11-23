@@ -18,9 +18,7 @@ docker compose stop > /dev/null 2>&1
 paso "2/5 etiquetado"
 python ml/etiquetar.py --solo-propio --sufijo _propio > data/etiquetar_v12_propio.log 2>&1 || { paso "FALLO etiquetar"; exit 1; }
 
-paso "3/5 prueba de fuego: v11 en las corridas nuevas que nunca vio"
-python ml/evaluar_externo.py --modelo data/resultados_v11/modelo_ensamble.json --nuevas-para resultados_v11 \
-  --nombre v11_nuevas > data/externo_v11_nuevas.log 2>&1
+paso "3/5 (prueba de v11 en las corridas nuevas: v11 se elimino el 22-nov; sus cifras estan en el README 13.0)"
 
 paso "4/5 entrenamiento de v12"
 BASE="--sufijo _propio --contexto --tendencias --seed-folds 42"

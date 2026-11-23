@@ -17,7 +17,7 @@ naturales (carga alta en varios servicios a la vez).
 
 Uso (desde la raiz; evalua sobre las predicciones de la validacion cruzada):
   python ml/causa_raiz.py
-  python ml/causa_raiz.py --resultados resultados_v11 --ventana 10
+  python ml/causa_raiz.py --resultados resultados_v12_sindep --ventana 10
 La usan ml/demo.py y ml/evidencia_vivo.py.
 """
 import argparse

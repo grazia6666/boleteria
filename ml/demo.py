@@ -33,10 +33,10 @@ Modo repeticion (sin Docker, siempre igual; ideal para presentar):
 
 Modelo: por defecto el final, v12 = ensamble de 3 LSTM entrenado con 175 corridas, 95 de ellas de
 calendario aleatorio, incluidas 30 de caidas en cadena (data/resultados_v12/modelo_ensamble.json): la
-probabilidad es el promedio de los tres y el umbral 0.90. Si no existe, usa v11, v9, v8 y luego v7.
-Para comparar con v11:
-  python ml/demo.py --modelo data/resultados_v11/modelo_ensamble.json
-  python ml/demo.py --replay var_inj_leve_notificaciones_r1 --resultados resultados_v11
+probabilidad es el promedio de los tres y el umbral 0.90.
+Para comparar con el mismo LSTM sin las entradas de dependencias (README 13.11):
+  python ml/demo.py --modelo data/resultados_v12_sindep/modelo_ensamble.json
+  python ml/demo.py --replay var_inj_leve_notificaciones_r1 --resultados resultados_v12_sindep
 
 Opciones:
   --replay RUN      corrida de data/ a reproducir (en vez de medir en vivo)
@@ -85,15 +85,9 @@ SOSTENIDO = 3           # segundos seguidos para declarar cuello de botella (eti
 SILENCIO = 5            # segundos apagada antes de un encendido para contar anticipacion (lead honesto)
 HIST = 60               # segundos de historia guardados (ventana de 30 s + 15 s para las tendencias)
 NOMBRE = "LSTM"         # como se llama el modelo en pantalla (v7, v8...): se deduce de la ruta
-# modelo por defecto: el mas nuevo que exista (ensamble v12, v11, v9, v8, v7)
-_CANDIDATOS = [("resultados_v12", os.path.join("resultados_v12", "modelo_ensamble.json")),
-               ("resultados_v11", os.path.join("resultados_v11", "modelo_ensamble.json")),
-               ("resultados_v9", os.path.join("resultados_v9", "modelo_ensamble.json")),
-               ("resultados_v8", os.path.join("resultados_v8", "modelo_ensamble.json")),
-               ("resultados_v7", os.path.join("resultados_v7", "models", "lstm_final.pt"))]
-RESULTADOS_DEF, MODELO_DEF = next(((r, os.path.join(HERE, "data", m)) for r, m in _CANDIDATOS
-                                   if os.path.exists(os.path.join(HERE, "data", m))),
-                                  (_CANDIDATOS[-1][0], os.path.join(HERE, "data", _CANDIDATOS[-1][1])))
+# modelo por defecto: el final (ensamble v12). Los modelos anteriores se eliminaron el 22-nov (README 13.6).
+RESULTADOS_DEF = "resultados_v12"
+MODELO_DEF = os.path.join(HERE, "data", RESULTADOS_DEF, "modelo_ensamble.json")
 
 
 def nombre_de(texto):

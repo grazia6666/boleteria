@@ -6,7 +6,7 @@ cada corrida la predijo un modelo que no la vio al entrenar. Compara contra la r
 
 Uso (desde la raiz, despues de entrenar.py):
   python ml/por_escenario.py                                   # modelo final v7
-  python ml/por_escenario.py --resultados resultados_v7 --sufijo _propio
+  python ml/por_escenario.py --resultados resultados_v12 --sufijo _propio
 
 Que es cada columna (todas sobre las corridas de ese escenario):
   f1, precision, recall  por segundo, en la vista B (solo segundos sin cuello de botella en ese momento).
@@ -44,7 +44,7 @@ ESCENARIO = {"normal_base": "normal", "normal_inj": "normal", "var_inj": "normal
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=os.path.join(HERE, "data"))
-    ap.add_argument("--resultados", default="resultados_v7")
+    ap.add_argument("--resultados", default="resultados_v12")
     a = ap.parse_args()
 
     out = os.path.join(a.data, a.resultados)

@@ -580,14 +580,11 @@ boleteria_nube/
 │   ├── graficas_mejoras.py         ← figuras de causa raíz y calibración (docs/img/)
 │   ├── anticipacion_latencia.py    ← ¿el aviso llegó antes del primer pico de latencia? (sección 13.9)
 │   ├── por_escenario.py            ← métricas por escenario de carga (normal / progresivo / burst)
-│   ├── barrido.py                  ← barrido de hiperparámetros y balanceo (varias semillas)
-│   ├── ensamble.py                 ← ensamble de semillas: evalúa y arma el modelo final (v8, v9)
+│   ├── ensamble.py                 ← ensamble de semillas: evalúa y arma el modelo final
 │   ├── evaluar_externo.py          ← mide un modelo solo en un grupo de corridas (p. ej. las rnd_*)
-│   ├── pipeline_v9.sh              ← campaña aleatoria → etiquetado → v8 en rnd_* → v9 → tablas
-│   ├── pipeline_v14.sh             ← v12 reentrenado y v14 (señales de tiempo propio); descartado (13.8)
-│   ├── entrenar_conjunto.py        ← v13: un LSTM que ve los 6 servicios a la vez; descartado (13.8)
-│   ├── pipeline_thr.sh             ← v15 (freno de CPU de Docker) contra la misma config. sin freno; descartado (13.10)
-│   ├── comparar_freno.py           ← tablas de esa comparación (data_thr/comparar_freno.txt)
+│   ├── pipeline_v12.sh             ← campaña de caídas en cadena → etiquetado → v12 → tablas
+│   ├── pipeline_ablacion_dep.sh    ← el mismo LSTM sin las entradas de dependencias (13.11)
+│   ├── comparar_dependencias.py    ← ablación de dependencias × causa raíz, por escenario (13.11)
 │   ├── demo.py                     ← demo en vivo y en modo repetición
 │   ├── evidencia_lead.py           ← gráfica de 3 servicios con predicción, inicio real y Prediction Lead Time
 │   ├── evidencia_vivo.py           ← la misma evidencia para una corrida nueva, con el modelo final
@@ -595,16 +592,13 @@ boleteria_nube/
 └── data/                           ← (no se sube a git: se regenera con los scripts)
     ├── <run_id>/                   ← una carpeta por corrida
     ├── dataset_metrics.csv, dataset_edges.csv, resumen_corridas.csv, calidad_corridas.csv
-    ├── dataset_etiquetado[_propio].csv, episodios[_propio].csv, umbrales[_propio].json
+    ├── dataset_etiquetado_propio.csv, episodios_propio.csv, umbrales_propio.json   ← la etiqueta del modelo final
     ├── resultados_v12/             ← modelo final: s1, s2, s3 + modelo_ensamble.json + predicciones + calibracion.json
-    ├── resultados_v11/             ← modelo anterior (145 corridas)
-    ├── resultados_v9/              ← modelo anterior (116 corridas)
-    ├── resultados_v8/              ← modelo anterior (mismo ensamble, 80 corridas de calendario fijo)
-    ├── resultados_v7/              ← un solo LSTM
-    ├── externo_<modelo>_rnd.csv    ← resultados de evaluar_externo.py en las corridas aleatorias
-    ├── barrido/                    ← resumen del barrido (resumen.csv, detalle.csv) y los registros de sus 40 entrenamientos
-    └── vivo/                       ← corridas de la verificación en vivo
+    └── resultados_v12_sindep/      ← el mismo LSTM sin las entradas de dependencias (ablación, 13.11)
+data_thr/                           ← (no se sube a git) campaña del freno de CPU, 88 corridas: réplica de la ablación (13.10, 13.11)
 ```
+
+**Limpieza del 22-nov.** Para dejar solo lo que usa el modelo final se eliminaron los resultados de las versiones anteriores (v3 a v11, v13, v14 y v15), la etiqueta original (`dataset_etiquetado.csv`, que `python ml/etiquetar.py` sin `--solo-propio` vuelve a generar) y los scripts de experimentos descartados: `barrido.py`, `entrenar_conjunto.py` (v13), `comparar_freno.py` y `pipeline_thr.sh` (v15) y `pipeline_v9/v10/v11/v14.sh`. Sus cifras siguen en esta guía y los scripts en el historial de git (`git log --diff-filter=D --name-only`). Las corridas grabadas no se tocaron.
 
 Flujo de datos:
 
@@ -821,9 +815,6 @@ python ml/ensamble.py --dirs resultados_v12/s1 resultados_v12/s2 resultados_v12/
 python ml/evaluar_externo.py --resultados resultados_v12 --nombre v12
 python ml/por_escenario.py --resultados resultados_v12
 
-# 11. (opcional) Barrido de hiperparámetros, ~4 h con la máquina libre
-python ml/barrido.py
-
 # 12. (opcional) Verificación en vivo: 6 corridas (~45 min, Docker arriba) y su evaluación
 python ml/verificar_vivo.py correr
 python ml/verificar_vivo.py evaluar        # v12; para otro modelo: --modelo ... --resultados ...
@@ -837,7 +828,7 @@ python ml/anticipacion_latencia.py         # anticipación contra el primer pico
 
 El plan completo tiene 176 corridas. El dataset usa 175, porque `rnd_normal_10` no quedó con marca `OK`.
 
-Las últimas etapas también están encadenadas en scripts para Git Bash, que saltan las corridas ya hechas y guardan su registro en `data/pipeline_v*.log`. `bash ml/pipeline_v12.sh` corre las 30 corridas de caídas en cadena (~4 h), el etiquetado, la prueba de v11 en las corridas nuevas y los 3 entrenamientos (~20 min). `bash ml/pipeline_v11.sh` corre 29 corridas aleatorias (~4 h), el etiquetado, la prueba de v9 en las corridas nuevas y 9 entrenamientos (~50 min). `ml/pipeline_v9.sh` y `ml/pipeline_v10.sh` reproducen los modelos anteriores.
+Las últimas etapas también están encadenadas en scripts para Git Bash, que saltan las corridas ya hechas y guardan su registro en `data/pipeline_v*.log`. `bash ml/pipeline_v12.sh` corre las 30 corridas de caídas en cadena (~4 h), el etiquetado y los 3 entrenamientos (~20 min). Los pipelines de los modelos anteriores (v9, v10, v11, v14) se eliminaron el 22-nov y están en el historial de git.
 
 Cada entrenamiento tarda ~5–7 min con la máquina libre. **No entrenes mientras corre una campaña** (contamina las mediciones).
 
@@ -1092,8 +1083,8 @@ Las dos figuras se regeneran con `python ml/graficas_mejoras.py`, que las guarda
 
 Los dos buscaban lo mismo: menos falsas alarmas en cadena y más avisos en carga normal y progresiva. Se evaluaron con el mismo protocolo que v12 y ninguno lo superó.
 
-- **v13** (`ml/entrenar_conjunto.py --forma conjunta`, resultados en `data/resultados_v13/`): un LSTM que ve los 6 servicios a la vez y da las 6 probabilidades. A 3 falsas alarmas/h, F1 0,28 contra 0,36 de v12. Cadenas avisadas en el servicio, 23 % contra 27 %, y con su dependencia, 61 % contra 68 %. Fallas graduales, 59 % contra 71 %. En las corridas del sprint, F1 0,22 contra 0,40. Probable causa: tiene 6 veces menos ejemplos (56 mil segundos, en vez de un ejemplo por servicio y segundo).
-- **v14** (`bash ml/pipeline_v14.sh`, resultados en `data/resultados_v14/` y `resultados_v14base/`): v12 más 5 señales de **tiempo propio** (`datos.PROPIO`: tiempo propio, fracción del tiempo esperando a otros, cola de quienes lo llaman y cambio del tiempo propio en 5 y 15 s), entrenado con 29 corridas más (18 progresivas, 10 fallas lentas y `rnd_normal_10`, 204 en total). Se comparó con **v12 reentrenado con las mismas 204** (`v14base`), para separar el efecto de las señales del de las corridas:
+- **v13** (`ml/entrenar_conjunto.py --forma conjunta`, eliminado el 22-nov; en el historial de git): un LSTM que ve los 6 servicios a la vez y da las 6 probabilidades. A 3 falsas alarmas/h, F1 0,28 contra 0,36 de v12. Cadenas avisadas en el servicio, 23 % contra 27 %, y con su dependencia, 61 % contra 68 %. Fallas graduales, 59 % contra 71 %. En las corridas del sprint, F1 0,22 contra 0,40. Probable causa: tiene 6 veces menos ejemplos (56 mil segundos, en vez de un ejemplo por servicio y segundo).
+- **v14** (`bash ml/pipeline_v14.sh`, eliminado el 22-nov; en el historial de git): v12 más 5 señales de **tiempo propio** (`datos.PROPIO`: tiempo propio, fracción del tiempo esperando a otros, cola de quienes lo llaman y cambio del tiempo propio en 5 y 15 s), entrenado con 29 corridas más (18 progresivas, 10 fallas lentas y `rnd_normal_10`, 204 en total). Se comparó con **v12 reentrenado con las mismas 204** (`v14base`), para separar el efecto de las señales del de las corridas:
 
 | Validación cruzada, 204 corridas | Precisión | Recall | F1 | Falsas alarmas/h | Fallas graduales avisadas |
 | --- | --- | --- | --- | --- | --- |
@@ -1129,7 +1120,7 @@ Detalle por episodio en `data/resultados_v12/anticipacion_latencia_episodios.csv
 
 **La idea.** Docker limita cada contenedor a 1 CPU repartiendo el tiempo en periodos de 100 ms; si el servicio gasta su cuota antes de que termine el periodo, lo frena hasta el siguiente. El recolector ahora guarda `thr_pct` (% de periodos frenados en el último segundo) y `thr_ms`. Una prueba de 5 corridas (7 episodios) sugería que el freno pasa de 10–20 % entre 5 y 11 s antes del primer pico de latencia, incluso con la CPU media por debajo de 80 %.
 
-**Cómo se probó.** Campaña de 88 corridas nuevas con el recolector nuevo en `data_thr/` (4 de referencia, 20 fallas lentas, 30 progresivas, 10 caídas en cadena y 24 de carga normal; sin burst, porque una ráfaga instantánea frena y satura en el mismo segundo). Todas pasaron el control de calidad. Con las mismas corridas y los mismos folds se entrenaron dos ensambles de 3 semillas (`bash ml/pipeline_thr.sh`): la configuración de v12 sin freno y **v15** = la misma + 5 entradas de freno (`datos.FRENO`: freno, su media de 10 s, su cambio en 5 y 15 s y el freno máximo de las dependencias; `entrenar.py --freno`).
+**Cómo se probó.** Campaña de 88 corridas nuevas con el recolector nuevo en `data_thr/` (4 de referencia, 20 fallas lentas, 30 progresivas, 10 caídas en cadena y 24 de carga normal; sin burst, porque una ráfaga instantánea frena y satura en el mismo segundo). Todas pasaron el control de calidad. Con las mismas corridas y los mismos folds se entrenaron dos ensambles de 3 semillas (`bash ml/pipeline_thr.sh`, eliminado el 22-nov junto con `comparar_freno.py` y el modelo v15; en el historial de git): la configuración de v12 sin freno y **v15** = la misma + 5 entradas de freno (`datos.FRENO`: freno, su media de 10 s, su cambio en 5 y 15 s y el freno máximo de las dependencias; `entrenar.py --freno`).
 
 | Validación cruzada, 88 corridas, a igual tasa de falsas alarmas | F1 (media de 3 semillas ± desv.) | Fallas graduales avisadas | Graduales avisadas antes del primer pico |
 | --- | --- | --- | --- |
@@ -1144,6 +1135,23 @@ Detalle por episodio en `data/resultados_v12/anticipacion_latencia_episodios.csv
 - **Como regla sola tampoco sirve:** "freno > 20 %" da F1 0,28 con 15 falsas alarmas/h; "freno > 40 % durante 3 s", 0,27 con 2/h pero avisa solo 14 % de las fallas graduales. "CPU > 80 %" da 0,29 con 6,4/h. Con 88 corridas, la ventaja de la prueba de 5 corridas no se sostiene: en las fallas graduales que avisa, "freno > 20 %" llega, en la mediana, al mismo tiempo que el primer pico de latencia.
 
 **Conclusión:** se queda v12. Es el tercer intento con señales nuevas que empata (v14, v15) y confirma 13.8: lo que falta para avisar antes no está en las métricas del contenedor. Salidas en `data_thr/comparar_freno.txt`, `data_thr/comparacion_freno.csv` y `data_thr/freno_semillas.txt`.
+
+### 13.11 Ablación: el mismo LSTM con y sin las entradas de dependencias (21-nov)
+
+Pedida en la retroalimentación del primer parcial. `bash ml/pipeline_ablacion_dep.sh` entrena v12 **sin** las 5 entradas de dependencias (`cpu_dep`, `cola_dep`, `lat_p95_dep`, `d5_cpu_dep`, `d15_cpu_dep`: 22 entradas en vez de 27) con las mismas corridas, semillas y folds. `python ml/comparar_dependencias.py [--data data_thr]` arma las tablas.
+
+| F1 a igual tasa de falsas alarmas (media ± desv. de 3 semillas) | Sin dependencias | Con dependencias (v12) |
+| --- | --- | --- |
+| 175 corridas, 3 falsas alarmas/h | 0,33 ± 0,01 | 0,30 ± 0,01 |
+| 175 corridas, 2 falsas alarmas/h | 0,27 ± 0,03 | 0,25 ± 0,03 |
+| Réplica en 88 corridas (`data_thr/`), 3 falsas alarmas/h | 0,48 ± 0,02 | 0,50 ± 0,02 |
+| Réplica en 88 corridas, 2 falsas alarmas/h | 0,43 ± 0,02 | 0,45 ± 0,03 |
+
+- **Las entradas de dependencias no mejoran el pronóstico de forma consistente:** la diferencia es del tamaño del ruido entre semillas y cambia de signo entre los dos conjuntos. Tampoco hay ventaja estable en fallas graduales (73 % contra 71 %; réplica 62 % contra 57 %) ni en cadenas (57 % contra 60 %; réplica 57 % contra 49 %).
+- **La causa raíz (13.7) actúa igual con o sin esas entradas:** falsas alarmas −23 % (3,04 → 2,34 y 2,87 → 2,20 por hora), recall −4 puntos, sin perder fallas graduales ni cobertura de cadenas. El valor de conocer las dependencias está en esa regla, no en las entradas.
+- v12 se queda como modelo (ya está calibrado y es la base de la demo y las gráficas); en el paper no se afirma que las entradas de dependencias mejoren el pronóstico. La GNN del segundo parcial debe compararse contra este LSTM sin dependencias.
+
+Salidas: `data/resultados_v12_sindep/comparacion_dependencias*.csv` y `comparar_dependencias.txt` (y lo mismo en `data_thr/resultados_thr_sindep/`).
 
 ---
 
@@ -1193,7 +1201,7 @@ python run_experiment.py --scenario burst --duration 360 --peak-users 70 --base-
 - El `t de carga` de la pantalla y de los eventos son segundos desde el inicio de la carga, el mismo eje de las gráficas. La demo y la corrida leen las métricas por separado, así que el inicio real y el Lead Time pueden diferir unos segundos. El valor oficial es el de la gráfica (sección 14.4).
 - En vivo el resultado varía de una corrida a otra, igual que en la evaluación. Para una presentación es más seguro el modo repetición.
 - Las falsas alarmas que se ven en pantalla son las de los 6 servicios juntos: con v12, ~12–18 por hora (una cada 3–5 min).
-- Para comparar con v11: `python ml/demo.py --modelo data/resultados_v11/modelo_ensamble.json`.
+- Para comparar con el LSTM sin entradas de dependencias (13.11): `python ml/demo.py --modelo data/resultados_v12_sindep/modelo_ensamble.json`.
 - Para probar una ráfaga en rampa: `python run_experiment.py --scenario burst --duration 420 --peak-users 70 --base-users 15 --burst-times 80,250 --burst-ramp 60 --burst-len 30 --run-id vivo_burst_rampa`.
 
 Opciones: `--modelo` (un `.pt` o un ensamble `.json`), `--umbral` (corte de la alarma), `--log archivo.csv` (guarda cada segundo), `--sin-pantalla` (texto en vez de tabla), `--duracion` (segundos), `--exportar` (puerto para Prometheus y Grafana, 9108 por defecto; 0 lo apaga).

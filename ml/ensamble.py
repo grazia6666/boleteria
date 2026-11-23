@@ -2,13 +2,12 @@
 Ensamble de semillas: promedia las probabilidades de varios entrenamientos de la MISMA configuracion
 (distinta semilla, mismos folds) y evalua el promedio sin reentrenar.
 
-Uso (despues de ml/barrido.py):
-  python ml/ensamble.py --dirs barrido/base_s1 barrido/base_s2 barrido/base_s3
-  python ml/ensamble.py --dirs resultados_v8/s1 resultados_v8/s2 resultados_v8/s3 --salida resultados_v8
+Uso (despues de entrenar las semillas con ml/entrenar.py ... --seed-folds 42):
+  python ml/ensamble.py --dirs resultados_v12/s1 resultados_v12/s2 resultados_v12/s3 --salida resultados_v12
 
 Sin mirar el test: en cada fold, el umbral del ensamble es la media de los umbrales que cada semilla
 eligio en su validacion (config.json -> umbrales_por_fold). Todas las carpetas deben venir del mismo
-reparto en folds (--seed-folds), que es lo que hace barrido.py.
+reparto en folds (--seed-folds).
 Imprime las metricas de cada semilla por separado y las del ensamble (vista B y lead time honesto).
 """
 import argparse

@@ -10,7 +10,7 @@ guarda como "umbral_calibrado".
 
 Uso (desde la raiz):
   python ml/calibrar.py                         # v12 -> data/resultados_v12/calibracion.json
-  python ml/calibrar.py --resultados resultados_v11
+  python ml/calibrar.py --resultados resultados_v12_sindep
 Antes de guardar mide la calibracion de forma honesta: ajusta en 3/4 de las corridas y la mide en el 1/4
 restante (4 veces). La usan ml/demo.py y ml/evidencia_vivo.py si el archivo existe.
 """
